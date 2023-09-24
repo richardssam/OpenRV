@@ -58,6 +58,12 @@ alias rvtest="ctest --test-dir ${RV_BUILD} --extra=verbose"
 alias rvinst="cmake --install ${RV_BUILD} --prefix ${RV_INST}"
 alias rvclean="rm -rf ${RV_BUILD}"
 
+if [[ "$OSTYPE" == "msys"* ]]; then
+  # Overrides for windows-msys
+  alias rvsetup="SETUPTOOLS_USE_DISTUTILS=stdlib pip install --user --upgrade -r ${RV_HOME}/requirements.txt"
+  export PATH=$PATH:${RV_HOME}/_build/stage/app/bin
+fi
+
 # ALIASES: Config and Build
 
 alias rvmk="rvcfg && rvbuild"
