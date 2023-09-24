@@ -82,10 +82,23 @@ echo "RV_HOME is $RV_HOME"
 echo "RV_BUILD is $RV_BUILD"
 echo "RV_INST is $RV_INST"
 echo "CMAKE_GENERATOR is $CMAKE_GENERATOR"
-echo "QT_HOME is $QT_HOME"
-if [[ "$OSTYPE" == "msys"* ]]; then echo "WIN_PERL is $WIN_PERL"; fi
+if [ ! -d "$QT_HOME" ]; then
+  echo "QT_HOME is $QT_HOME - WARNING: directory does not exist."
+else
+  echo "QT_HOME is $QT_HOME"
+
+fi
+
+if [[ "$OSTYPE" == "msys"* ]]; then 
+  if [ ! -d "$WIN_PERL" ]; then
+    echo "WIN PERL is $WIN_PERL - WARNING: directory does not exist."
+  else
+    echo "WIN_PERL is $WIN_PERL"
+  fi
+fi
 
 echo "To override any of them do unset [name]; export [name]=value; source $SCRIPT" 
 echo
 echo "If this is your first time building RV try rvbootstrap (release) or rvbootstrapd (debug)"
 echo "To build quickly after bootstraping try rvmk (release) or rvmkd (debug)"
+
