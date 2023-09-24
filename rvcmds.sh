@@ -29,8 +29,8 @@ elif [[ "$OSTYPE" == "darwin"* ]]; then
   CMAKE_GENERATOR="${CMAKE_GENERATOR:-Ninja}"
   QT_HOME="${QT_HOME:-$HOME/Qt/${QT_VERSION}/clang_64}"
 elif [[ "$OSTYPE" == "msys"* ]]; then
-  CMAKE_GENERATOR="${CMAKE_GENERATOR:-Visual Studio 16 2019}"
   export ACLOCAL_PATH=/usr/share/aclocal
+  CMAKE_GENERATOR="${CMAKE_GENERATOR:-Visual Studio 15 2017}"
   QT_HOME="${QT_HOME:-c:/Qt/${QT_VERSION}/msvc2019_64}"
   WIN_PERL="${WIN_PERL:-c:/Strawberry/perl/bin}"
   CMAKE_WIN_ARCH="${CMAKE_WIN_ARCH:--A x64}"
