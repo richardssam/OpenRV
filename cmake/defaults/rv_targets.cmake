@@ -9,6 +9,28 @@ SET(CMAKE_SKIP_RPATH
 )
 
 IF(APPLE)
+  # Only native builds are supported (x86_64 on Intel MacOS and ARM64 on Apple chipset). Rosetta can be used to build x86_64 on Apple chipset.
+  IF("${CMAKE_HOST_SYSTEM_PROCESSOR}" STREQUAL "x86_64")
+    SET(RV_TARGET_APPLE_X86_64
+        ON
+        CACHE INTERNAL "Compile for x86_64 on Apple MacOS" FORCE
+    )
+    SET(__target_arch__
+        -DRV_ARCH_X86_64
+    )
+  ELSEIF("${CMAKE_HOST_SYSTEM_PROCESSOR}" STREQUAL "arm64")
+    SET(RV_TARGET_APPLE_ARM64
+        ON
+        CACHE INTERNAL "Compile for arm64 on Apple MacOS" FORCE
+    )
+    SET(__target_arch__
+        -DRV_ARCH_ARM64
+    )
+  ENDIF()
+
+  MESSAGE(STATUS "Building for ${CMAKE_HOST_SYSTEM_PROCESSOR}")
+  ADD_COMPILE_OPTIONS(${__target_arch__})
+
   # Darwin is the name of the mach BSD-base kernel :-)
   SET(RV_TARGET_DARWIN
       BOOL TRUE "Detected target is Apple's macOS"
@@ -18,23 +40,16 @@ IF(APPLE)
       "Darwin"
       CACHE INTERNAL ""
   )
-  SET(CMAKE_OSX_ARCHITECTURES
-      "x86_64"
-      CACHE STRING "Force compilation for Intel processors." FORCE
-  )
-
-  SET(RV_OSX_EMULATION
-      ON
-  )
-  SET(RV_OSX_EMULATION_ARCH
-      "-x86_64"
-      CACHE STRING "Architecture to use while building the dependencies" FORCE
-  ) # Set to empty string for native
 
   # The code makes extensive use of the 'PLATFORM_DARWIN' definition
   SET(PLATFORM
       "DARWIN"
       CACHE STRING "Platform identifier used in Tweak Makefiles"
+  )
+
+  SET(ARCH
+      "${CMAKE_HOST_SYSTEM_PROCESSOR}"
+      CACHE STRING "CPU Architecture identifier"
   )
 
   SET(CMAKE_MACOSX_RPATH
@@ -100,6 +115,16 @@ ELSEIF(UNIX)
     -DPLATFORM_OPENGL=1
   )
 
+  SET(PLATFORM
+      "LINUX"
+      CACHE STRING "Platform identifier"
+  )
+
+  SET(ARCH
+      "IA32_64"
+      CACHE STRING "CPU Architecture identifier"
+  )
+
   EXECUTE_PROCESS(
     COMMAND cat /etc/redhat-release
     OUTPUT_VARIABLE RHEL_VERBOSE
@@ -112,8 +137,6 @@ ELSEIF(UNIX)
     SET(RV_TARGET_IS_RHEL${RHEL_VERSION_MAJOR}
         BOOL TRUE "Detected a Redhat Entreprise Linux OS"
     )
-  ELSE()
-    MESSAGE(FATAL_ERROR "Unknown or unsupported Linux distribution version; stopping configuration!")
   ENDIF()
 ELSEIF(WIN32)
   MESSAGE(STATUS "Building RV for Microsoft Windows")

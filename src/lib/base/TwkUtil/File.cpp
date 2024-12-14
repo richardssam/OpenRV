@@ -24,11 +24,19 @@
 #include <windows.h>
 #include <codecvt>
 #include <wchar.h>
+#include <QFileInfo>
+#include <TwkQtCoreUtil/QtConvert.h>
+#include <mutex>
 #endif
 
 #include <time.h>
 #include <stl_ext/string_algo.h>
 
+#ifdef PLATFORM_WINDOWS
+#include <windows.h>
+extern Q_CORE_EXPORT int qt_ntfs_permission_lookup;
+std::mutex g_perms_mutex;
+#endif
 
 namespace TwkUtil {
 using namespace std;
@@ -46,6 +54,31 @@ string to_utf8(const wchar_t *wc)
     return wstr.to_bytes(wc);
 }
 
+#ifdef PLATFORM_WINDOWS
+bool fileExistsWithLongPathSupport(const string& filePath)
+{
+    // Convert the filepath to a wide string to accommodate all UTF-8 characters
+    wstring wFilePath = to_wstring(filePath.c_str());
+    wstring extendedFilePath = L"\\\\?\\" + wFilePath;
+
+    HANDLE fileHandle = CreateFileW(
+        extendedFilePath.c_str(),
+        GENERIC_READ,
+        FILE_SHARE_READ,
+        nullptr,
+        OPEN_EXISTING,
+        FILE_ATTRIBUTE_NORMAL,
+        nullptr
+    );
+
+    if (fileHandle != INVALID_HANDLE_VALUE) {
+        CloseHandle(fileHandle);
+        return true;
+    }
+    return false;
+}
+#endif
+
 int stat(const char *c, struct _stat64 *buffer)
 {
     return _wstat64(to_wstring(c).c_str(), buffer);
@@ -59,6 +92,35 @@ FILE* fopen(const char *c, const char *mode)
 int open(const char *c, int oflag)
 {
     return _wopen(to_wstring(c).c_str(), oflag);
+}
+
+int access(const char *path, int mode)
+{
+    if( !isDirectory(path) ) 
+    {
+        return _waccess(to_wstring(path).c_str(), mode);
+    }
+
+    // access does not work with directories on Windows, so let's use Qt, but
+    // Qt permission checks are turned off by default on Windows
+    QFileInfo qf(TwkQtCoreUtil::UTF8::qconvert(path));
+
+    {
+      std::lock_guard<std::mutex> guard(g_perms_mutex);
+      qt_ntfs_permission_lookup++;
+    }
+
+    int result = 0;
+    if( mode | F_OK ) result = qf.exists() ? result : -1;
+    if( mode | R_OK ) result = qf.isReadable() ? result : -1;
+    if( mode | W_OK ) result = qf.isWritable() ? result : -1;
+
+    {
+      std::lock_guard<std::mutex> guard(g_perms_mutex);
+      qt_ntfs_permission_lookup--;
+    }
+
+    return result;
 }
 #else
 int stat(const char *c, struct stat *buffer)
@@ -74,6 +136,11 @@ FILE* fopen(const char *c, const char *mode)
 int open(const char *c, int oflag)
 {
     return ::open(c, oflag);
+}
+
+int access(const char *path, int mode)
+{
+    return ::access(path, mode);
 }
 #endif
 
@@ -153,6 +220,14 @@ bool fileExists( const char *fname )
 #else
     struct stat statBuf;
 #endif
+
+#ifdef PLATFORM_WINDOWS
+
+    string filePath = fname; // Casting to string
+    if (filePath.length() > 260) return fileExistsWithLongPathSupport(filePath);
+
+#endif
+
     int status = TwkUtil::stat( fname, &statBuf );
 
     if ( status != 0 )
@@ -566,6 +641,16 @@ bool isDirectory(const char* directory)
 #endif
 
     return false;
+}
+
+bool isReadable(const char* path)
+{
+    return TwkUtil::access(path, R_OK) == 0;
+}
+
+bool isWritable(const char* path)
+{
+    return TwkUtil::access(path, W_OK) == 0;
 }
 
 //----------------------------------------------------------------------

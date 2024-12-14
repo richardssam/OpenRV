@@ -6,22 +6,36 @@
 //  
 //
 #include <OCIONodes/OCIOIPNode.h>
+#include <OCIONodes/ConfigIOProxy.h>
+#include <OCIONodes/OCIO1DLUT.h>
+#include <OCIONodes/OCIO3DLUT.h>
 #include <IPCore/SessionIPNode.h>
 #include <IPCore/NodeDefinition.h>
 #include <IPCore/IPGraph.h>
 #include <IPCore/ShaderCommon.h>
+#include <TwkExc/Exception.h>
 #include <TwkUtil/EnvVar.h>
-#include <OpenColorIO/OpenColorIO.h>
-#include <boost/functional/hash.hpp>
-#include <algorithm>
 
-namespace OCIO = OCIO_NAMESPACE;
+#include <boost/functional/hash.hpp>
+
+#include <algorithm>
+#include <cstdlib>
+#include <sstream>
+#include <regex>
 
 namespace IPCore {
 using namespace std;
 using namespace boost;
 
-static ENVVAR_INT( evOCIOLut3DSize, "RV_OCIO_3D_LUT_SIZE", 32 );
+// In the eventualy of an RV user wanting to get the exact same results
+// as in RV 2024 and earlier versions of RV, the following environment
+// variable can be defined to tell OCIO to use the legacy GPU processor 
+// implementation (OCIO::getOptimizedLegacyGPUProcessor()):
+static ENVVAR_BOOL( evOCIOUseLegacyGPUProcessor, "RV_OCIO_USE_LEGACY_GPU_PROCESSOR", false );
+
+// Note: This env var is only taken into account when using the legacy GPU 
+// processor implementation (see above)
+static ENVVAR_INT( evOCIOLegacyLut3DSize, "RV_OCIO_3D_LUT_SIZE", 32 );
 
 struct OCIOState
 {
@@ -31,14 +45,14 @@ struct OCIOState
     string                  view;
     string                  linear;
     string                  shaderID;
-    string                  lutID;
     Shader::Function*       function;
 
     OCIOState() : function(0) {}
 };
 
 namespace {
-OCIO::GpuLanguage GPULanaguage = OCIO::GPU_LANGUAGE_UNKNOWN;
+#define GPU_LANGUAGE_UNKNOWN OCIO::GpuLanguage::GPU_LANGUAGE_CG
+OCIO::GpuLanguage GPULanguage = GPU_LANGUAGE_UNKNOWN;
 }
 
 string
@@ -68,10 +82,8 @@ OCIOIPNode::OCIOIPNode(const string& name,
                        IPGraph* graph,
                        GroupIPNode* group)
     : IPNode(name, def, graph, group),
-      m_lutfb(0)
+      m_useRawConfig(false)
 {
-    pthread_mutex_init(&m_lock, NULL);
-
     Property::Info* info = new Property::Info();
     info->setPersistent(false);
 
@@ -81,7 +93,7 @@ OCIOIPNode::OCIOIPNode(const string& name,
     m_activeProperty = declareProperty<IntProperty>("ocio.active", 1);
 
     declareProperty<FloatProperty>("ocio.lut", info);
-    m_lutSize = declareProperty<IntProperty>("ocio.lut3DSize", evOCIOLut3DSize.getValue());
+    declareProperty<IntProperty>("ocio.lut3DSize", evOCIOLegacyLut3DSize.getValue());
     declareProperty<StringProperty>("ocio.inColorSpace", "");
 
     declareProperty<StringProperty>("ocio_color.outColorSpace", "");
@@ -92,10 +104,20 @@ OCIOIPNode::OCIOIPNode(const string& name,
 
     declareProperty<StringProperty>("ocio_display.display", "");
     declareProperty<StringProperty>("ocio_display.view", "");
-    //declareProperty<FloatProperty>("ocio_display.exposure");
-    //declareProperty<FloatProperty>("ocio_display.gamma");
-    //declareProperty<IntProperty>("ocio_display.channels");
+
+    if (func == "synlinearize")
+    {
+        m_inTransformURL = declareProperty<StringProperty>("inTransform.url", "", info);
+        m_inTransformData = declareProperty<ByteProperty>("inTransform.data", info);
+        m_useRawConfig = true;
+    }
     
+    if (func == "syndisplay")
+    {
+        m_outTransformURL = declareProperty<StringProperty>("outTransform.url", "", info);
+        m_useRawConfig = true;
+    }
+
     //
     //  Read-only properties to report config info to the user
     //
@@ -108,7 +130,7 @@ OCIOIPNode::OCIOIPNode(const string& name,
 
     updateConfig();
 
-    if (GPULanaguage == OCIO::GPU_LANGUAGE_UNKNOWN)
+    if (GPULanguage == GPU_LANGUAGE_UNKNOWN)
     {
         IPNode* session = graph->sessionNode();
         int major = session->property<IntProperty>("opengl.glsl.majorVersion")->front();
@@ -116,11 +138,12 @@ OCIOIPNode::OCIOIPNode(const string& name,
 
         if (major == 1 && minor < 30)
         {
-            GPULanaguage = OCIO::GPU_LANGUAGE_GLSL_1_0;
+            // Note: 1.2 is currently the lowest available value in OCIO
+            GPULanguage = OCIO::GPU_LANGUAGE_GLSL_1_2;
         }
         else
         {
-            GPULanaguage = OCIO::GPU_LANGUAGE_GLSL_1_3;
+            GPULanguage = OCIO::GPU_LANGUAGE_GLSL_1_3;
         }
     }
 }
@@ -129,14 +152,6 @@ OCIOIPNode::~OCIOIPNode()
 {
     if (m_state->function) m_state->function->retire();
     delete m_state;
-    if (m_lutfb)
-    {
-        if (!m_lutfb->hasStaticRef() || m_lutfb->staticUnRef()) 
-        {
-            delete m_lutfb;
-        }        
-    }    
-    pthread_mutex_destroy(&m_lock);
 }
 
 void
@@ -144,12 +159,19 @@ OCIOIPNode::updateConfig()
 {
     try 
     {
-        m_state->config = OCIO::GetCurrentConfig();
+        if (useRawConfig())
+        {  
+            m_state->config = OCIO::Config::CreateFromConfigIOProxy(std::make_shared<ConfigIOProxy>(this));
+        }
+        else
+        {
+            m_state->config = OCIO::GetCurrentConfig();
+        }
     }
     catch (std::exception& exc)
     {
         delete m_state;
-        cout << "ERROR: OCIOIPNode updateConfig caught: " << exc.what() << endl;
+        cerr << "ERROR: OCIOIPNode updateConfig caught: " << exc.what() << endl;
         m_state = 0;
         throw;
     }
@@ -169,9 +191,24 @@ OCIOIPNode::updateConfig()
 
     m_state->display  = m_state->config->getDefaultDisplay();
     m_state->view     = m_state->config->getDefaultView(m_state->display.c_str());
-    m_state->linear   = m_state->config->getColorSpace(OCIO::ROLE_SCENE_LINEAR)->getName();
+
+    if (useRawConfig())
+    {
+        m_state->linear = "";
+    }
+    else if (getenv("OCIO"))
+    {
+      OCIO::ConstColorSpaceRcPtr linearColorSpace =
+          m_state->config->getColorSpace( OCIO::ROLE_SCENE_LINEAR );
+      m_state->linear = linearColorSpace ? linearColorSpace->getName() : "";
+    }
+    else
+    {
+        m_state->linear = "";
+        std::cerr << "ERROR: OCIO environment variable not set" << std::endl;
+    }
+
     m_state->shaderID = "";
-    m_state->lutID    = "";
 
     if (m_state->function) m_state->function->retire();
     m_state->function = 0;
@@ -187,7 +224,6 @@ OCIOIPNode::updateContext()
     if (Component* context = component("ocio_context"))
     {
         const Component::Container& props = context->properties();
-        //m_state->context = OCIO::Context::Create(); // destroys old one
 
         for (size_t i = 0; i < props.size(); i++)
         {
@@ -218,10 +254,70 @@ shaderLegal(const string& s)
 
     transform(s.begin(), s.end(), ns.begin(), op_shaderLegal);
 
+    // OCIO replaces any consecutive '_' with just one '_' (See: OCIO:GPUShaderDesc::setFunctionName)
+    // In order to keep the names aligned use: GPUShaderDesc::getFunctionName() to get the name OCIO uses to set RV's Shader Function and bind the parameters.
+    ns = std::regex_replace(ns, std::regex("_+"), "_");   // one or more underscore: replace by only one.
+    ns = std::regex_replace(ns, std::regex("_+$"), "");   // do not end by an underscore because the code will append another one
+
     return ns;
 }
 
-};
+// Add the 1D/3D LUT uniform as a shader function parameter to leverage RV's
+// current shader variables binding mechanism which rely on shader variables
+// being passed as function arguments for all its shaders. Note that the
+// OCIOv2 generated shader no longer passes the LUTs as function arguments.
+void shaderAddLutAsParameter( std::string& inout_glsl,
+                              const std::string& lutSamplerName,
+                              const std::string& lutSamplerType )
+{
+  const std::string from = "vec4 inPixel";
+  std::string to = from + std::string( ", " ) + lutSamplerType +
+                    std::string( " " ) + lutSamplerName;
+  inout_glsl = std::regex_replace( inout_glsl, std::regex( from ), to );
+}
+
+};  // namespace
+
+OCIO::MatrixTransformRcPtr OCIOIPNode::createMatrixTransformXYZToRec709() const
+{
+    OCIO::MatrixTransformRcPtr matrix_xyz_to_rec709 = OCIO::MatrixTransform::Create();
+    double m44[16] = { 3.240969941905, -1.537383177570, -0.498610760293, 0, 
+                    -0.969243636281, 1.875967501508, 0.041555057407, 0, 
+                    0.055630079697, -0.203976958889, 1.056971514243, 0, 
+                    0, 0, 0, 1 };
+    matrix_xyz_to_rec709->setMatrix(m44);
+
+    return matrix_xyz_to_rec709;
+}
+
+OCIO::MatrixTransformRcPtr OCIOIPNode::getMatrixTransformXYZToRec709()
+{
+    if (!m_matrix_xyz_to_rec709)
+    {
+        QMutexLocker lock(&this->m_lock);
+        if (!m_matrix_xyz_to_rec709)
+        {
+            m_matrix_xyz_to_rec709 = createMatrixTransformXYZToRec709();
+        }
+    }
+
+    return m_matrix_xyz_to_rec709;
+}
+
+OCIO::MatrixTransformRcPtr OCIOIPNode::getMatrixTransformRec709ToXYZ()
+{
+    if (!m_matrix_rec709_to_xyz)
+    {
+        QMutexLocker lock(&this->m_lock);
+        if (!m_matrix_rec709_to_xyz)
+        {
+            m_matrix_rec709_to_xyz = createMatrixTransformXYZToRec709();
+            m_matrix_rec709_to_xyz->setDirection(OCIO::TRANSFORM_DIR_INVERSE);
+        }
+    }
+
+    return m_matrix_rec709_to_xyz;
+}
 
 IPImage*
 OCIOIPNode::evaluate(const Context& context)
@@ -237,7 +333,7 @@ OCIOIPNode::evaluate(const Context& context)
     //  we generate an intermediate buffer in the "display" case.
     //
 
-    if (ociofunction != "display")
+    if (ociofunction != "display" && ociofunction != "syndisplay")
     {
         image = IPNode::evaluate(context);
         if (!image) return IPImage::newNoImage(this, "No Input");
@@ -293,7 +389,6 @@ OCIOIPNode::evaluate(const Context& context)
     }
     boost::hash<string> string_hash;
     string inName       = stringProp("ocio.inColorSpace", m_state->linear);
-    int    lutSize      = intProp("ocio.lut3DSize", evOCIOLut3DSize.getValue());
 
     try
     {
@@ -321,7 +416,7 @@ OCIOIPNode::evaluate(const Context& context)
             //
 
             OCIO::LookTransformRcPtr   transform = OCIO::LookTransform::Create();
-            OCIO::TransformDirection   direction = OCIO::TRANSFORM_DIR_UNKNOWN;
+            OCIO::TransformDirection   direction = OCIO::TRANSFORM_DIR_FORWARD;
             string                     looksName = stringProp("ocio_look.look", "");
             string                     outName   = stringProp("ocio_look.outColorSpace", m_state->linear);
             bool                       reverse   = intProp("ocio_look.direction", 0) == 1;
@@ -357,11 +452,11 @@ OCIOIPNode::evaluate(const Context& context)
             //  Emulate the nuke OCIODisplay node
             //
 
-            OCIO::DisplayTransformRcPtr transform = OCIO::DisplayTransform::Create();
-            string                      display   = stringProp("ocio_display.display", "");
-            string                      view      = stringProp("ocio_display.view", "");
+            OCIO::DisplayViewTransformRcPtr transform = OCIO::DisplayViewTransform::Create();
+            string                          display   = stringProp("ocio_display.display", "");
+            string                          view      = stringProp("ocio_display.view", "");
 
-            transform->setInputColorSpaceName(inName.c_str());
+            transform->setSrc(inName.c_str());
             transform->setDisplay(display.c_str());
             transform->setView(view.c_str());
             processor = m_state->config->getProcessor(m_state->context, 
@@ -371,151 +466,209 @@ OCIOIPNode::evaluate(const Context& context)
             size_t hashValue = string_hash(inName + display + view);
             shaderName << "OCIO_d_" << shaderLegal(display) << "_" << shaderLegal(view) << "_" << name() << "_" << hex << hashValue;
         }
-
-        OCIO::GpuShaderDesc shaderDesc;
-        shaderDesc.setLanguage(GPULanaguage);
-        shaderDesc.setFunctionName(shaderName.str().c_str());
-        shaderDesc.setLut3DEdgeLen(lutSize);
-
-        pthread_mutex_lock(&m_lock);
-
-        //
-        // The story so far: We always thought OCIO _always_ produced hw
-        // shading that required a 3D LUT of some kind.  This is (mostly) not
-        // true.
-        //
-        // The Processor holds 3 vectors of "Ops": those that happen before any
-        // LUT (m_gpuOpsHwPreProcess), those that must be implmented in a LUT
-        // (m_gpuOpsCpuLatticeProcess), and those that happen after the LUT
-        // (m_gpuOpsHwPostProcess).  These lists are created by
-        // PartitionGPUOps() and if all the incoming Ops are analytical (have
-        // direct GPU implementation) then all the ops will go into the first
-        // list and the others will be empty.  In this case, OCIO will not
-        // (need not) generate a 3D LUT at all.  AND the "3DLUT ID" generated
-        // by getGpuLut3DCacheID() will be "<NULL>".  As far as I can tell,
-        // there's no other way for calling code to tell that a 3DLUT is
-        // unnecessary
-        //
-        // BUT, there is hack in OCIO code (to prevent segfault, comment says)
-        // so that on Mac only, it _always_ generates a 3D LUT.  When the LUT
-        // is not necessary, it will be an identity LUT, although the ID is
-        // still "<NULL>".
-        //
-        // ALSO BUT, the shader that OCIO generates _always_ has LUT argument,
-        // whether it is going to use it or not.
-        //
-        // Now we only add a lut FB if one is needed; NOTE that core OCIO code
-        // has also been changed to support this (now it only produces a shader
-        // with a LUT parameter IF it needs one.
-        //
-
-        string lut3dCacheID  = processor->getGpuLut3DCacheID(shaderDesc);
-        string shaderCacheID = processor->getGpuShaderTextCacheID(shaderDesc);
-
-        if (m_state->lutID != lut3dCacheID)
+        else if (ociofunction == "synlinearize")
         {
-            if (m_lutfb)
+            // The input transform can be specified in two ways: via a url or via a data array 
+            string inTransformURL = stringProp("inTransform.url", "");
+            if ( inTransformURL.empty() && (!m_inTransformData || m_inTransformData->size()==0)) 
             {
-                if (!m_lutfb->hasStaticRef() || m_lutfb->staticUnRef()) 
+                TWK_THROW_EXC_STREAM("Either inTransform.url or inTransform.data property needs to be set for synlinearize function");
+            }
+
+            if (!m_transform)
+            {
+                QMutexLocker lock(&this->m_lock);
+                if (!m_transform)
                 {
-                    delete m_lutfb;
-                }        
-                m_lutfb = 0;
-            }            
+                    m_transform = OCIO::GroupTransform::Create();
 
-            if (lut3dCacheID != "<NULL>")
-            {
-                vector<string> channels(3);
-                channels[0] = "R";
-                channels[1] = "G";
-                channels[2] = "B";
+                    // Is the input transform specified via a data array ?
+                    if (inTransformURL.empty())
+                    {
+                        // We need to provide a unique name to OCIOv2, otherwise it might use a 
+                        // potentially incorrect color transform with the same name already in its cache.
+                        static int uniqueCounter = 0;
+                        inTransformURL = name()+"."+std::to_string(uniqueCounter++)+"."+ConfigIOProxy::USE_IN_TRANSFORM_DATA_PROPERTY;
+                    }
 
-                m_lutfb = new TwkFB::FrameBuffer(FrameBuffer::NormalizedCoordinates,
-                                                 lutSize, lutSize, lutSize, 3, FrameBuffer::FLOAT, 
-                                                 0, &channels, FrameBuffer::BOTTOMLEFT,
-                                                 true);
+                    // Inverse the ICC transform 
+                    OCIO::FileTransformRcPtr transform = OCIO::FileTransform::Create();
+                    transform->setSrc(inTransformURL.c_str());
+                    transform->setInterpolation(OCIO::INTERP_BEST);
+                    transform->setDirection(OCIO::TRANSFORM_DIR_INVERSE);
+                    m_transform->appendTransform(transform);
 
-		        m_lutfb->staticRef();
-                m_lutfb->setIdentifier(lut3dCacheID);
-                processor->getGpuLut3D(m_lutfb->pixels<float>(), shaderDesc);
+                    // Concatenate it with the RV's working space transform which is currently assumed to be 
+                    // 709 linear like the original EXR spec. 
+                    m_transform->appendTransform(getMatrixTransformXYZToRec709());
+                }
             }
-            m_state->lutID = lut3dCacheID;
 
-            if (Shader::debuggingType() == Shader::AllDebugInfo)
-            {
-                cerr << "OCIONode: "<< name() << " new lutID " << lut3dCacheID << endl;
-            }
+            processor = m_state->config->getProcessor(m_state->context, 
+                                                      m_transform,
+                                                      OCIO::TRANSFORM_DIR_FORWARD);
+
+            size_t hashValue = string_hash(name());
+            shaderName << "OCIO_sl_" << name() << "_" << hex << hashValue;
         }
-
-        if (m_state->shaderID != shaderCacheID)
+        else if (ociofunction == "syndisplay")
         {
-            if (m_state->function) m_state->function->retire();
-
-            ostringstream glsl;
-            glsl << processor->getGpuShaderText(shaderDesc);
-
-            m_state->function = new Shader::Function(shaderName.str(), 
-                                                     glsl.str(),
-                                                     Shader::Function::Color,
-                                                     1);
-            m_state->shaderID = shaderCacheID;
-
-            if (Shader::debuggingType() != Shader::NoDebugInfo)
+            // The outTransform.url property typically refers to an ICC monitor profile
+            const string outTransformURL = stringProp("outTransform.url", "");
+            if (outTransformURL.empty())
             {
-                cerr << "OCIONode: " << name() << " new shaderID " << shaderCacheID << endl <<
-                        "OCIONode:     new Shader '" << shaderName.str() << "':" << endl << glsl.str() << endl;
+                TWK_THROW_EXC_STREAM("outTransform.url property needs to be set for syndisplay function");
             }
+
+            if (!m_transform)
+            {
+                QMutexLocker lock(&this->m_lock);
+                if (!m_transform)
+                {
+                    m_transform = OCIO::GroupTransform::Create();
+
+                    // RV's working space is currently assumed to be 709 linear like the original
+                    // EXR spec. In the display case this transform is inverted.
+                    m_transform->appendTransform(getMatrixTransformRec709ToXYZ());
+
+                    // Concatenate the inverse workingSpaceTransform with the ICC monitor profile transforma
+                    OCIO::FileTransformRcPtr transform = OCIO::FileTransform::Create();
+                    transform->setSrc(outTransformURL.c_str());
+                    transform->setInterpolation(OCIO::INTERP_BEST);
+                    m_transform->appendTransform(transform);
+                }
+            }
+
+        processor = m_state->config->getProcessor(
+            m_state->context, m_transform, OCIO::TRANSFORM_DIR_FORWARD );
+
+        size_t hashValue = string_hash( outTransformURL );
+        shaderName << "OCIO_sd_" << name() << "_" << hex << hashValue;
+      }
+
+      QMutexLocker lock(&this->m_lock);
+      OCIO::GpuShaderDescRcPtr shaderDesc =
+          OCIO::GpuShaderDesc::CreateShaderDesc();
+      shaderDesc->setFunctionName( shaderName.str().c_str() );
+      shaderDesc->setLanguage( GPULanguage );
+      OCIO::ConstGPUProcessorRcPtr gpuProcessor;
+
+      if (evOCIOUseLegacyGPUProcessor.getValue())
+      {
+        const int legacyLutSize= intProp("ocio.lut3DSize", evOCIOLegacyLut3DSize.getValue());
+        gpuProcessor = processor->getOptimizedLegacyGPUProcessor(OCIO::OPTIMIZATION_DEFAULT, legacyLutSize);
+      }
+      else
+      {
+        gpuProcessor = processor->getOptimizedGPUProcessor( OCIO::OPTIMIZATION_DEFAULT );
+      }
+      
+      // Fills the shaderDesc from the proc.
+      gpuProcessor->extractGpuShaderInfo( shaderDesc );
+
+      string shaderCacheID = gpuProcessor->getCacheID();
+      if( m_state->shaderID != shaderCacheID )
+      {
+        if( m_state->function ) m_state->function->retire();
+
+        string glsl( shaderDesc->getShaderText() );
+
+        m_1DLUTs.clear();
+        const unsigned int numTextures = shaderDesc->getNumTextures();
+        for( unsigned idx = 0; idx < numTextures; ++idx )
+        {
+          m_1DLUTs.push_back(
+              std::make_shared<OCIO1DLUT>( shaderDesc, idx, shaderCacheID ) );
+
+          // Add the LUTs'shader uniform as a shader function parameter
+          shaderAddLutAsParameter( glsl, m_1DLUTs[idx]->samplerName(),
+                                   m_1DLUTs[idx]->samplerType() );
         }
 
-        pthread_mutex_unlock(&m_lock);
+        m_3DLUTs.clear();
+        const unsigned int num3DTextures = shaderDesc->getNum3DTextures();
+        for( unsigned idx = 0; idx < num3DTextures; ++idx )
+        {
+          m_3DLUTs.push_back(
+              std::make_shared<OCIO3DLUT>( shaderDesc, idx, shaderCacheID ) );
 
+          // Add the LUTs'shader uniform as a shader function parameter
+          shaderAddLutAsParameter( glsl, m_3DLUTs[idx]->samplerName(),
+                                   m_3DLUTs[idx]->samplerType() );
+        }
+
+        m_state->function = new Shader::Function(
+            shaderDesc->getFunctionName(), glsl, Shader::Function::Color, 1 /*numFetchesApprox*/);
+        m_state->shaderID = shaderCacheID;
+
+        if( Shader::debuggingType() != Shader::NoDebugInfo )
+        {
+          cout << "OCIONode: " << name() << " new shaderID " << shaderCacheID
+               << endl
+               << "OCIONode: " << numTextures << "x 1D LUTs, " << num3DTextures << "x 3D LUTs"
+               << "OCIONode:     new Shader '" << shaderDesc->getFunctionName()
+               << "':" << endl
+               << glsl << endl;
+        }
+      }
+
+      if (image->mergeExpr || image->shaderExpr )
+      {
         const Shader::Function* F = m_state->function;
-        Shader::ArgumentVector args(F->parameters().size());
+        Shader::ArgumentVector args( F->parameters().size() );
+        Shader::Expression*& expr = image->mergeExpr ? image->mergeExpr : image->shaderExpr;
 
-        if (image->mergeExpr)
+        args[0] =
+            new Shader::BoundExpression( F->parameters()[0], 
+                                         expr );
+
+        // Add the 3D LUTs expressions (if any)
+        for( unsigned idx = 0; idx < m_3DLUTs.size(); ++idx )
         {
-                         args[0] = new Shader::BoundExpression(F->parameters()[0], image->mergeExpr); 
-            if (m_lutfb) args[1] = new Shader::BoundSampler(F->parameters()[1], Shader::ImageOrFB(m_lutfb, 0));
-            image->mergeExpr = new Shader::Expression(F, args, image);
-        }
-        else if (image->shaderExpr)
-        {
-                         args[0] = new Shader::BoundExpression(F->parameters()[0], image->shaderExpr); 
-            if (m_lutfb) args[1] = new Shader::BoundSampler(F->parameters()[1], Shader::ImageOrFB(m_lutfb, 0));
-            image->shaderExpr = new Shader::Expression(F, args, image);
+          args[idx + 1] = new Shader::BoundSampler(
+              F->parameters()[idx + 1],
+              Shader::ImageOrFB( m_3DLUTs[m_3DLUTs.size() - 1 - idx]->lutfb(),
+                                 0 ) );
         }
 
-        if (ociofunction == "display" && image->shaderExpr)
+        // Add the 1D LUTs expressions (if any)
+        for( unsigned idx = 0; idx < m_1DLUTs.size(); ++idx )
         {
-            image->resourceUsage = image->shaderExpr->computeResourceUsageRecursive();
+          args[idx + m_3DLUTs.size() + 1] = new Shader::BoundSampler(
+              F->parameters()[idx + m_3DLUTs.size() + 1],
+              Shader::ImageOrFB( m_1DLUTs[m_1DLUTs.size() - 1 - idx]->lutfb(),
+                                 0 ) );
         }
+
+        expr = new Shader::Expression( F, args, image );
+
+        if( ociofunction == "display" && image->shaderExpr )
+        {
+          image->resourceUsage =
+              image->shaderExpr->computeResourceUsageRecursive();
+        }
+      }
     }
-    catch (std::exception& exc)
+    catch( std::exception& exc )
     {
-        cout << "ERROR: OCIOIPNode: " << exc.what() << endl;
+      cerr << "ERROR: OCIOIPNode: " << exc.what() << endl;
     }
 
     return image;
-}
+  }
 
-void 
-OCIOIPNode::propertyChanged(const Property* p)
-{
-    if (p == m_lutSize)
-    {
-        if (m_lutfb)
-        {
-            if (!m_lutfb->hasStaticRef() || m_lutfb->staticUnRef()) 
-            {
-                delete m_lutfb;
-            }        
-            m_lutfb = 0;
-        }
-    }
-
+  void OCIOIPNode::propertyChanged( const Property* p )
+  {
     if (Component* context = component("ocio_context"))
     {
         if (context->hasProperty(p)) updateContext();
+    }
+
+    // synlinearize/syndisplay functions:
+    // Reset transforms and associated color transform files if a linked property changed
+    if (p == m_inTransformURL || p == m_inTransformData || p == m_outTransformURL)
+    {
+        m_transform.reset();
     }
 
     IPNode::propertyChanged(p);
@@ -529,4 +682,4 @@ OCIOIPNode::readCompleted(const string& t, unsigned int v)
     IPNode::readCompleted(t,v);
 }
 
-} // Rv
+} // IPCore

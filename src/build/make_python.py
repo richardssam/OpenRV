@@ -50,6 +50,7 @@ distributed with the build instead of relying on the OS keychain. In order to ke
 an up to date list, we're going to pull it from the certifi module, which incorporates
 all the certificate authorities that are distributed with Firefox.
 """
+import site
 
 try:
     import os
@@ -67,8 +68,45 @@ try:
         os.environ["SSL_CERT_FILE"] = certifi.where()
 
 except Exception as e:
-    pass  # Silently fail..
+    print("Failed to set certifi.where() as SSL_CERT_FILE.", file=sys.stderr)
+    print(e, file=sys.stderr)
+    print("Set DO_NOT_SET_SSL_CERT_FILE to skip this step in RV's Python initialization.", file=sys.stderr)
 
+try:
+    import os
+
+    if "DO_NOT_REORDER_PYTHON_PATH" not in os.environ:
+        import site
+        import sys
+
+        prefixes = list(set(site.PREFIXES))
+
+        # Python libs and site-packages is the first that should be in the PATH
+        new_path_list = list(set(site.getsitepackages()))
+        new_path_list.insert(0, os.path.dirname(new_path_list[0]))
+
+        # Then any paths in RV's app package
+        for path in sys.path:
+            for prefix in prefixes:
+                if path.startswith(prefix) is False:
+                    continue
+
+                if os.path.exists(path):
+                    new_path_list.append(path)
+
+        # Then the remaining paths
+        for path in sys.path:
+            if os.path.exists(path):
+                new_path_list.append(path)
+
+        # Save the new sys.path
+        sys.path = new_path_list
+        site.removeduppaths()
+
+except Exception as e:
+    print("Failed to reorder RV's Python search path", file=sys.stderr)
+    print(e, file=sys.stderr)
+    print("Set DO_NOT_REORDER_PYTHON_PATH to skip this step in RV's Python initialization.", file=sys.stderr)
 '''
 
 
@@ -79,10 +117,14 @@ def get_python_interpreter_args(python_home: str) -> List[str]:
     :param python_home: Python home of a Python package
     :return: Path to the python interpreter
     """
+
+    build_opentimelineio = platform.system() == "Windows" and VARIANT == "Debug"
+    python_name_pattern = "python*" if not build_opentimelineio else "python_d*"
+
     python_interpreters = glob.glob(
-        os.path.join(python_home, "python*"), recursive=True
+        os.path.join(python_home, python_name_pattern), recursive=True
     )
-    python_interpreters += glob.glob(os.path.join(python_home, "bin", "python*"))
+    python_interpreters += glob.glob(os.path.join(python_home, "bin", python_name_pattern))
 
     # sort put python# before python#-config
     python_interpreters = sorted(
@@ -120,56 +162,56 @@ def patch_python_distribution(python_home: str) -> None:
         if "ssl" in failed_lib or "hashlib" in failed_lib:
             print(f"Fixing {failed_lib}")
             shutil.move(failed_lib, failed_lib.replace("_failed.so", ".so"))
+    if OPENSSL_OUTPUT_DIR:
+        if platform.system() == "Darwin":
+            openssl_libs = glob.glob(os.path.join(OPENSSL_OUTPUT_DIR, "lib", "lib*.dylib*"))
+            openssl_libs = [l for l in openssl_libs if os.path.islink(l) is False]
 
-    if platform.system() == "Darwin":
-        openssl_libs = glob.glob(os.path.join(OPENSSL_OUTPUT_DIR, "lib", "lib*.dylib*"))
-        openssl_libs = [l for l in openssl_libs if os.path.islink(l) is False]
+            python_openssl_libs = []
 
-        python_openssl_libs = []
+            for lib_path in openssl_libs:
+                print(f"Copying {lib_path} to the python home")
+                dest = os.path.join(python_home, "lib", os.path.basename(lib_path))
+                shutil.copyfile(lib_path, dest)
+                python_openssl_libs.append(dest)
 
-        for lib_path in openssl_libs:
-            print(f"Copying {lib_path} to the python home")
-            dest = os.path.join(python_home, "lib", os.path.basename(lib_path))
-            shutil.copyfile(lib_path, dest)
-            python_openssl_libs.append(dest)
+            libs_to_patch = glob.glob(
+                os.path.join(python_home, "lib", "**", "*.so"), recursive=True
+            )
 
-        libs_to_patch = glob.glob(
-            os.path.join(python_home, "lib", "**", "*.so"), recursive=True
-        )
+            for lib_path in python_openssl_libs:
+                lib_name = os.path.basename(lib_path)
 
-        for lib_path in python_openssl_libs:
-            lib_name = os.path.basename(lib_path)
+                for lib_to_patch in libs_to_patch:
+                    print(f"Changing the library path of {lib_name} on {lib_to_patch}")
+                    install_name_tool_change_args = [
+                        "install_name_tool",
+                        "-change",
+                        lib_path,
+                        f"@rpath/{lib_name}",
+                        lib_to_patch,
+                    ]
 
-            for lib_to_patch in libs_to_patch:
-                print(f"Changing the library path of {lib_name} on {lib_to_patch}")
-                install_name_tool_change_args = [
-                    "install_name_tool",
-                    "-change",
-                    lib_path,
-                    f"@rpath/{lib_name}",
-                    lib_to_patch,
-                ]
+                    print(f"Executing {install_name_tool_change_args}")
+                    subprocess.run(install_name_tool_change_args).check_returncode()
 
-                print(f"Executing {install_name_tool_change_args}")
-                subprocess.run(install_name_tool_change_args).check_returncode()
+        elif platform.system() == "Linux":
+            openssl_libs = glob.glob(os.path.join(OPENSSL_OUTPUT_DIR, "lib", "lib*.so*"))
 
-    elif platform.system() == "Linux":
-        openssl_libs = glob.glob(os.path.join(OPENSSL_OUTPUT_DIR, "lib", "lib*.so*"))
+            for lib_path in openssl_libs:
+                print(f"Copying {lib_path} to the python home")
+                shutil.copy(lib_path, os.path.join(python_home, "lib"))
 
-        for lib_path in openssl_libs:
-            print(f"Copying {lib_path} to the python home")
-            shutil.copy(lib_path, os.path.join(python_home, "lib"))
+        elif platform.system() == "Windows":
+            openssl_dlls = glob.glob(os.path.join(OPENSSL_OUTPUT_DIR, "bin", "lib*"))
+            for dll_path in openssl_dlls:
+                print(f"Copying {dll_path} to the python home")
+                shutil.copy(dll_path, os.path.join(python_home, "bin"))
 
-    elif platform.system() == "Windows":
-        openssl_dlls = glob.glob(os.path.join(OPENSSL_OUTPUT_DIR, "bin", "lib*"))
-        for dll_path in openssl_dlls:
-            print(f"Copying {dll_path} to the python home")
-            shutil.copy(dll_path, os.path.join(python_home, "bin"))
-
-        openssl_libs = glob.glob(os.path.join(OPENSSL_OUTPUT_DIR, "lib", "lib*"))
-        for lib_path in openssl_libs:
-            print(f"Copying {lib_path} to the python home")
-            shutil.copy(lib_path, os.path.join(python_home, "libs"))
+            openssl_libs = glob.glob(os.path.join(OPENSSL_OUTPUT_DIR, "lib", "lib*"))
+            for lib_path in openssl_libs:
+                print(f"Copying {lib_path} to the python home")
+                shutil.copy(lib_path, os.path.join(python_home, "libs"))
 
     python_interpreter_args = get_python_interpreter_args(python_home)
 
@@ -254,8 +296,9 @@ def test_python_distribution(python_home: str) -> None:
             my_env["OTIO_CXX_DEBUG_BUILD"] = "1"
 
             # Specify the location of the debug python import lib (eg. python39_d.lib)
-            python_lib_dir = os.path.join(tmp_python_home, "libs")
-            my_env["CMAKE_ARGS"] = f"-DCMAKE_LIBRARY_PATH={python_lib_dir}"
+            python_include_dirs = os.path.join(tmp_python_home, "include")
+            python_lib = os.path.join(tmp_python_home, "libs", f"python{PYTHON_VERSION}_d.lib")
+            my_env["CMAKE_ARGS"] = f"-DPython_LIBRARY={python_lib} -DCMAKE_INCLUDE_PATH={python_include_dirs}"
 
             opentimelineio_install_arg = python_interpreter_args + [
                 "-m",
@@ -393,8 +436,11 @@ def configure() -> None:
             f"--prefix={OUTPUT_DIR}",
             f"--exec-prefix={OUTPUT_DIR}",
             "--enable-shared",
-            f"--with-openssl={OPENSSL_OUTPUT_DIR}",
         ]
+
+        if OPENSSL_OUTPUT_DIR:
+            configure_args.append(f"--with-openssl={OPENSSL_OUTPUT_DIR}")
+
 
         if VARIANT == "Release":
             configure_args.append("--enable-optimizations")
@@ -402,9 +448,7 @@ def configure() -> None:
         CPPFLAGS = []
         LD_LIBRARY_PATH = []
 
-        if ARCH:
-            configure_args = ["arch", ARCH] + configure_args
-
+        if platform.system() == "Darwin":
             readline_prefix_proc = subprocess.run(
                 ["brew", "--prefix", "readline"], capture_output=True
             )
@@ -450,10 +494,14 @@ def configure() -> None:
 
         print(f"Executing {configure_args} from {SOURCE_DIR}")
 
+        subprocess_env = {**os.environ}
+        if OPENSSL_OUTPUT_DIR:
+            subprocess_env["LC_RPATH"] = os.path.join(OPENSSL_OUTPUT_DIR, "lib")
+
         subprocess.run(
             configure_args,
             cwd=SOURCE_DIR,
-            env={**os.environ, "LC_RPATH": os.path.join(OPENSSL_OUTPUT_DIR, "lib")},
+            env=subprocess_env,
         ).check_returncode()
 
         makefile_path = os.path.join(SOURCE_DIR, "Makefile")
@@ -513,27 +561,28 @@ def build() -> None:
 
         python_env = sys.executable
 
+        subprocess_env = {**os.environ, "PYTHON": python_env, "PATH": path_env}
+        if OPENSSL_OUTPUT_DIR:
+            subprocess_env["LC_RPATH"] = os.path.join(OPENSSL_OUTPUT_DIR, "lib")
+
+
         subprocess.run(
             build_args,
             cwd=SOURCE_DIR,
-            env={
-                **os.environ,
-                "LC_RPATH": os.path.join(OPENSSL_OUTPUT_DIR, "lib"),
-                "PYTHON": python_env,
-                "PATH": path_env,
-            },
+            env=subprocess_env,
         ).check_returncode()
     else:
         make_args = ["make", f"-j{os.cpu_count() or 1}"]
 
-        if ARCH:
-            make_args = ["arch", ARCH] + make_args
-
         print(f"Executing {make_args} from {SOURCE_DIR}")
+        subprocess_env = {**os.environ}
+        if OPENSSL_OUTPUT_DIR:
+            subprocess_env["LC_RPATH"] = os.path.join(OPENSSL_OUTPUT_DIR, "lib")
+
         subprocess.run(
             make_args,
             cwd=SOURCE_DIR,
-            env={**os.environ, "LC_RPATH": os.path.join(OPENSSL_OUTPUT_DIR, "lib")},
+            env=subprocess_env,
         ).check_returncode()
 
 
@@ -586,15 +635,14 @@ def install() -> None:
     else:
         make_args = ["make", "install", f"-j{os.cpu_count() or 1}", "-s"]
 
-        if ARCH:
-            make_args = ["arch", ARCH] + make_args
-
         print(f"Executing {make_args} from {SOURCE_DIR}")
-
+        subprocess_env = {**os.environ}
+        if OPENSSL_OUTPUT_DIR:
+            subprocess_env["LC_RPATH"] = os.path.join(OPENSSL_OUTPUT_DIR, "lib")
         subprocess.run(
             make_args,
             cwd=SOURCE_DIR,
-            env={**os.environ, "LC_RPATH": os.path.join(OPENSSL_OUTPUT_DIR, "lib")},
+            env=subprocess_env,
         ).check_returncode()
 
     # Create the 'python' symlink
@@ -617,7 +665,7 @@ if __name__ == "__main__":
 
     parser.add_argument("--source-dir", dest="source", type=pathlib.Path, required=True)
     parser.add_argument(
-        "--openssl-dir", dest="openssl", type=pathlib.Path, required=True
+        "--openssl-dir", dest="openssl", type=pathlib.Path, required=False
     )
     parser.add_argument("--temp-dir", dest="temp", type=pathlib.Path, required=True)
     parser.add_argument("--output-dir", dest="output", type=pathlib.Path, required=True)
@@ -633,6 +681,10 @@ if __name__ == "__main__":
         default="",
     )
 
+    if platform.system() == "Windows":
+        # Major and minor version of Python without dots. E.g. 3.10.3 -> 310
+        parser.add_argument("--python-version", dest="python_version", type=str, required=True, default="")
+
     parser.set_defaults(clean=False, configure=False, build=False, install=False)
 
     args = parser.parse_args()
@@ -644,6 +696,9 @@ if __name__ == "__main__":
     VARIANT = args.variant
     ARCH = args.arch
     OPENTIMELINEIO_SOURCE_DIR = args.otio_source_dir
+
+    if platform.system() == "Windows":
+        PYTHON_VERSION = args.python_version
 
     if args.clean:
         clean()

@@ -47,6 +47,7 @@
 #include <TwkAudio/AudioFormats.h>
 #include <TwkMovie/MovieIO.h>
 #include <TwkUtil/SystemInfo.h>
+#include <TwkUtil/File.h>
 #include <fstream>
 #include <iostream>
 #include <sstream>
@@ -690,14 +691,6 @@ RvPreferences::update()
 
     m_ui.displayOutputCombo->setCurrentIndex(dindex);
 
-#ifdef PLATFORM_DARWIN
-    //
-    //  Remove the 10 bit option on os x
-    //  can't figure out how to disable it
-    //
-    if (m_ui.displayOutputCombo->count() > 2) m_ui.displayOutputCombo->removeItem(2);
-#endif
-
     settings.endGroup();
 
     //----------------------------------------------------------------------
@@ -808,8 +801,8 @@ RvPreferences::resetPreferencesFile()
     QSettings::setDefaultFormat(QSettings::IniFormat);
 #endif
     
-    QCoreApplication::setOrganizationName("Autodesk");
-    QCoreApplication::setOrganizationDomain("autodesk.com");
+    QCoreApplication::setOrganizationName(INTERNAL_ORGANIZATION_NAME);
+    QCoreApplication::setOrganizationDomain(INTERNAL_ORGANIZATION_DOMAIN);
     QCoreApplication::setApplicationName(INTERNAL_APPLICATION_NAME);
 
     QSettings user;
@@ -2912,9 +2905,7 @@ RvPreferences::addPackage(bool)
 
             pdir.cd("Packages");
 
-            QFileInfo pinfo(pdir.absolutePath());
-
-            if (pinfo.isWritable())
+            if (TwkUtil::isWritable(UTF8::qconvert(pdir.absolutePath()).c_str()))
             {
                 possiblePlaces.push_back(pdir.absolutePath());
             }
@@ -2946,7 +2937,7 @@ RvPreferences::addPackage(bool)
     QFileDialog* fileDialog = new QFileDialog(this, 
                                               "Select rvpkg RV package files",
                                               dirname,
-                                              "rvpkg Package Files (*.zip *.rvpkg)");
+                                              "rvpkg Package Files (*.zip *.rvpkg *.rvpkgs)");
 
     QStringList files;
     if (fileDialog->exec()) files = fileDialog->selectedFiles();
@@ -2970,7 +2961,7 @@ RvPreferences::addPackage(bool)
     QStringList files = QFileDialog::getOpenFileNames(this, 
                                                       "Select rvpkg RV package files",
                                                       dirname,
-                                                      "rvpkg Package Files (*.zip *.rvpkg)",
+                                                      "rvpkg Package Files (*.zip *.rvpkg *.rvpkgs, *.rvpkgs)",
                                                       &selectedFilter,
                                                       options);
 #endif
@@ -3128,7 +3119,7 @@ RvPreferences::installDependantPackages(const QString& msg)
 {
     QMessageBox box(this);
     box.setWindowTitle(tr("Some Packages Depend on This One"));
-    box.setText(tr("Can't uninstall package because some other packages dependend on this one. Try and uninstall them first?\n\nDetails:\n") + msg);
+    box.setText(tr("Can't install package because some other packages dependend on this one. Try and install them first?\n\nDetails:\n") + msg);
 
     box.setWindowModality(Qt::WindowModal);
     QPushButton* b1 = box.addButton(tr("Abort"), QMessageBox::RejectRole);
@@ -3258,7 +3249,7 @@ RvPreferences::updateVideo()
 
             if (m_currentVideoDevice < 0 && m_currentVideoModule >= 0)
             {
-                VideoModule* m = vmods[m_currentVideoModule];
+                const auto m = vmods[m_currentVideoModule];
                 const VideoModule::VideoDevices& devs = m->devices();
                 string dname = parts[1].toUtf8().constData();
 
@@ -3286,12 +3277,12 @@ RvPreferences::updateVideo()
 
     for (size_t i = 0; i < vmods.size(); i++)
     {
-        TwkApp::VideoModule* mod = vmods[i];
+        auto mod = vmods[i];
         m_ui.videoModuleCombo->addItem(QString::fromUtf8(mod->name().c_str()));
 
         if (i == m_currentVideoModule)
         {
-            if (!mod->isOpen()) RvApp()->openVideoModule(mod);
+            if (!mod->isOpen()) RvApp()->openVideoModule(mod.get());
             m_ui.videoModuleCombo->setCurrentIndex(i);
             m_ui.videoDeviceCombo->clear();
             m_ui.videoDeviceCombo->hide();
@@ -3602,6 +3593,10 @@ RvPreferences::videoFormatChanged(int v)
         settings.setValue("videoFormat", v);
         settings.endGroup();
 
+        // The user has set a new video format which overrides the video format
+        // specified on the command line if any
+        Rv::Options::sharedOptions().presentFormat=nullptr;
+
         updateVideoDataFormat(d);
         updateVideoSync(d);
         updateVideoSyncSource(d);
@@ -3659,6 +3654,10 @@ RvPreferences::videoDataFormatChanged(int v)
         settings.beginGroup(QString::fromUtf8(str.str().c_str()));
         settings.setValue("dataFormat", v);
         settings.endGroup();
+
+        // The user has set a new video data format which overrides the video 
+        // data format specified on the command line if any
+        Rv::Options::sharedOptions().presentData=nullptr;
 
         updateVideoSync(d);
         updateVideoSyncSource(d);
@@ -3720,6 +3719,9 @@ RvPreferences::videoAudioCheckBoxChanged(int v)
         settings.beginGroup(QString::fromUtf8(str.str().c_str()));
         settings.setValue("useAsAudioDevice", checked);
         settings.endGroup();
+
+        // This user action overrides the presentAudio command line option if any
+        Rv::Options::sharedOptions().presentAudio=-1;
     }
 }
 
@@ -3819,7 +3821,7 @@ RvPreferences::currentVideoDevice() const
         m_currentVideoModule == -1) return 0;
 
     const IPCore::Application::VideoModules& vmods = RvApp()->videoModules();
-    VideoModule* mod = vmods[m_currentVideoModule];
+    const auto mod = vmods[m_currentVideoModule];
     const VideoModule::VideoDevices& devs = mod->devices();
     return devs[m_currentVideoDevice];
 }
@@ -4035,5 +4037,3 @@ RvPreferences::formatProfileChanged(int index)
 
 
 } // Rv
-
-

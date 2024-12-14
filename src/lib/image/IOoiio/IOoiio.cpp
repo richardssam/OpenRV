@@ -18,7 +18,7 @@
 namespace TwkFB {
 using namespace std;
 using namespace TwkUtil;
-using namespace OpenImageIO;
+using namespace OpenImageIO_v2_4;
 
 IOoiio::IOoiio() : FrameBufferIO("IOoiio", "n") // OIIO after any defaults of ours
 {
@@ -48,6 +48,13 @@ IOoiio::IOoiio() : FrameBufferIO("IOoiio", "n") // OIIO after any defaults of ou
     addType("ptx", "Disney PTex", r, codecs);
     addType("rla", "Wavefront RLA", rw, codecs);
     addType("iff", "IFF", rw, codecs);
+    addType("bmp", "Windows Bitmap", rw, codecs);
+    addType("dds", "Direct Draw Surface", rw, codecs);
+    addType("gif", "Graphics Interchange Format", r, codecs);
+    addType("ico", "Palette", r, codecs);
+    addType("pbm", "Portable Network Graphics", rw, codecs);
+    addType("pgm", "Portable Network Graphics", rw, codecs);
+    addType("ppm", "Portable Network Grapics", rw, codecs);
 
     // These are handled by their respective plugins
     // io_<something> in RV. This code is here to
@@ -55,14 +62,12 @@ IOoiio::IOoiio() : FrameBufferIO("IOoiio", "n") // OIIO after any defaults of ou
     //  
     // addType("tif", "TIFF Image", rw, codecs);
     // addType("tiff", "TIFF Image", rw, codecs);
-    // addType("j2c", "JPEG-2000 Codestream", r, codecs);
-    // addType("j2k", "JPEG-2000 Codestream", r, codecs);
-    // addType("jpt", "JPT-stream (JPEG 2000, JPIP)", r, codecs);
-    // addType("jp2", "JPEG-2000 Image", r, codecs);
+    addType("j2c", "JPEG-2000 Codestream", r, codecs);
+    addType("j2k", "JPEG-2000 Codestream", r, codecs);
+    addType("jpt", "JPT-stream (JPEG 2000, JPIP)", r, codecs);
+    addType("jp2", "JPEG-2000 Image", r, codecs);
     // addType("png", "Portable Network Graphics Image", rw, codecs);
     // addType("z", "Pixar Z-Depth", r, codecs);
-
-
 }
 
 IOoiio::~IOoiio() {}
@@ -191,7 +196,7 @@ IOoiio::getImageInfo(const std::string& filename, FBInfo& fbi) const
     }
 #endif
 
-    if (ImageInput* in = ImageInput::create(filename))
+    if (std::unique_ptr<ImageInput> in = ImageInput::create(filename))
     {
         ImageSpec spec;
         in->open(filename, spec);
@@ -346,7 +351,7 @@ IOoiio::getImageInfo(const std::string& filename, FBInfo& fbi) const
     {
         TWK_THROW_STREAM(IOException, "OIIO: Unable to open file \"" 
                          << filename << "\" for reading. " <<
-                         OpenImageIO::geterror());
+                         OpenImageIO_v2_4::geterror());
     }
 }
 
@@ -355,7 +360,7 @@ IOoiio::readImage(FrameBuffer& fb,
                   const std::string& filename,
                   const ReadRequest& request) const
 {
-    if (ImageInput* in = ImageInput::create(filename))
+    if (std::unique_ptr<ImageInput> in = ImageInput::create(filename))
     {
         bool useLayers = subimagesAsLayers(in->format_name());
 
@@ -457,13 +462,13 @@ IOoiio::readImage(FrameBuffer& fb,
         }
 
         in->close();
-        delete in;
+        in.reset();
     }
     else
     {
         TWK_THROW_STREAM(IOException, "OIIO: Unable to open file \"" 
                          << filename << "\" for reading. " <<
-                         OpenImageIO::geterror());
+                         OpenImageIO_v2_4::geterror());
     }
 }
 

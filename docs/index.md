@@ -5,6 +5,8 @@
 :hidden:
 :caption: Building Open RV
 build_system/config_linux_centos7
+build_system/config_linux_rocky8
+build_system/config_linux_rocky9
 build_system/config_macos
 build_system/config_windows
 build_system/build_errors
@@ -76,7 +78,6 @@ rv-manuals/rv-gto
 rv-manuals/rv-luts
 rv-manuals/rv-media-multi-representation
 rv-manuals/rv-mu-programming
-rv-manuals/rv-opencolorio-integrations
 ```
 
 ```{toctree}

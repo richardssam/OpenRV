@@ -5,11 +5,17 @@
 // SPDX-License-Identifier: Apache-2.0
 // 
 //******************************************************************************
-#ifndef __IPGraph__OCIOIPNode__h__
-#define __IPGraph__OCIOIPNode__h__
+
+#pragma once
+
 #include <IPCore/IPImage.h>
 #include <IPCore/IPNode.h>
 #include <TwkFB/FrameBuffer.h>
+
+#include <QMutex>
+#include <OpenColorIO/OpenColorIO.h>
+
+#include <memory>
 
 namespace IPCore {
 
@@ -20,6 +26,13 @@ namespace IPCore {
 ///
 
 struct OCIOState;
+
+namespace OCIO = OCIO_NAMESPACE;
+
+class OCIO1DLUT;
+using OCIO1DLUTPtr = std::shared_ptr<OCIO1DLUT>;
+class OCIO3DLUT;
+using OCIO3DLUTPtr = std::shared_ptr<OCIO3DLUT>;
 
 class OCIOIPNode : public IPNode
 {
@@ -42,21 +55,33 @@ class OCIOIPNode : public IPNode
     virtual void propertyChanged(const Property*);
 
     void updateConfig();
+    bool useRawConfig() const {return m_useRawConfig;}
 
   protected:
     void updateContext();
-    
+
+    OCIO::MatrixTransformRcPtr createMatrixTransformXYZToRec709() const;
+    OCIO::MatrixTransformRcPtr getMatrixTransformXYZToRec709();
+    OCIO::MatrixTransformRcPtr getMatrixTransformRec709ToXYZ();
+
   private:
-    IntProperty*    m_activeProperty;
-    IntProperty*    m_lutSize;
-    StringProperty* m_configDescription;
-    StringProperty* m_configWorkingDir;
-    FrameBuffer*    m_lutfb;
-    FrameBuffer*    m_prelutfb;
-    OCIOState*      m_state;
-    pthread_mutex_t m_lock;
+
+    IntProperty*    m_activeProperty{nullptr};
+    StringProperty* m_configDescription{nullptr};
+    StringProperty* m_configWorkingDir{nullptr};
+    std::vector<OCIO1DLUTPtr> m_1DLUTs;
+    std::vector<OCIO3DLUTPtr> m_3DLUTs;
+    OCIOState*      m_state{nullptr};
+    mutable QMutex  m_lock;
+    bool            m_useRawConfig{false};
+
+    // synlinearize/syndisplay functions
+    StringProperty* m_inTransformURL{nullptr};
+    ByteProperty*   m_inTransformData{nullptr};
+    StringProperty* m_outTransformURL{nullptr};
+    OCIO::GroupTransformRcPtr m_transform;
+    OCIO::MatrixTransformRcPtr m_matrix_xyz_to_rec709;
+    OCIO::MatrixTransformRcPtr m_matrix_rec709_to_xyz;
 };
 
-} // Rv
-
-#endif // __IPGraph__OCIOIPNode__h__
+} // IPCore

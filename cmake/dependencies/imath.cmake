@@ -7,20 +7,14 @@
 INCLUDE(ProcessorCount) # require CMake 3.15+
 PROCESSORCOUNT(_cpu_count)
 
-SET(_target
-    "RV_DEPS_IMATH"
-)
-
-SET(_version
-    "3.1.5"
-)
+RV_CREATE_STANDARD_DEPS_VARIABLES("RV_DEPS_IMATH" "3.1.6" "" "")
 
 SET(_download_url
     "https://github.com/AcademySoftwareFoundation/Imath/archive/refs/tags/v${_version}.zip"
 )
 
 SET(_download_hash
-    "921ac54505ab076a95b33a16b61956f4"
+    "3900f9e7cf8a0ae3edf2552ea92ef7d8"
 )
 
 SET(_install_dir
@@ -29,41 +23,15 @@ SET(_install_dir
 SET(_include_dir
     ${_install_dir}/include/Imath
 )
-
-SET(_make_command
-    make
-)
-SET(_configure_command
-    cmake
-)
-
-IF(${RV_OSX_EMULATION})
-  SET(_darwin_x86_64
-      "arch" "${RV_OSX_EMULATION_ARCH}"
-  )
-
-  SET(_make_command
-      ${_darwin_x86_64} ${_make_command}
-  )
-  SET(_configure_command
-      ${_darwin_x86_64} ${_configure_command}
-  )
-ENDIF()
-
-IF(RV_TARGET_WINDOWS)
-  # MSYS2/CMake defaults to Ninja
-  SET(_make_command
-      ninja
-  )
-ENDIF()
+SET(RV_DEPS_IMATH_ROOT_DIR ${_install_dir})
 
 IF(RV_TARGET_DARWIN)
   SET(_libname
-      ${CMAKE_SHARED_LIBRARY_PREFIX}Imath-3_1${RV_DEBUG_POSTFIX}.29.4.0${CMAKE_SHARED_LIBRARY_SUFFIX}
+      ${CMAKE_SHARED_LIBRARY_PREFIX}Imath-3_1${RV_DEBUG_POSTFIX}.29.5.0${CMAKE_SHARED_LIBRARY_SUFFIX}
   )
 ELSEIF(RV_TARGET_LINUX)
   SET(_libname
-      ${CMAKE_SHARED_LIBRARY_PREFIX}Imath-3_1${RV_DEBUG_POSTFIX}${CMAKE_SHARED_LIBRARY_SUFFIX}.29.4.0
+      ${CMAKE_SHARED_LIBRARY_PREFIX}Imath-3_1${RV_DEBUG_POSTFIX}${CMAKE_SHARED_LIBRARY_SUFFIX}.29.5.0
   )
 ELSEIF(RV_TARGET_WINDOWS)
   SET(_libname
@@ -71,7 +39,7 @@ ELSEIF(RV_TARGET_WINDOWS)
   )
 ENDIF()
 
-IF(RV_TARGET_LINUX)
+IF(RHEL_VERBOSE)
   SET(_lib_dir
       ${_install_dir}/lib64
   )
@@ -112,10 +80,9 @@ EXTERNALPROJECT_ADD(
   DOWNLOAD_EXTRACT_TIMESTAMP TRUE
   SOURCE_DIR ${RV_DEPS_BASE_DIR}/${_target}/src
   INSTALL_DIR ${_install_dir}
-  CONFIGURE_COMMAND ${CMAKE_COMMAND} -DCMAKE_INSTALL_PREFIX=${_install_dir} -DCMAKE_OSX_ARCHITECTURES=${CMAKE_OSX_ARCHITECTURES}
-                    -DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE} ${RV_DEPS_BASE_DIR}/${_target}/src
-  BUILD_COMMAND ${_make_command} -j${_cpu_count} -v
-  INSTALL_COMMAND ${_make_command} install
+  CONFIGURE_COMMAND ${CMAKE_COMMAND} ${_configure_options}
+  BUILD_COMMAND ${_cmake_build_command}
+  INSTALL_COMMAND ${_cmake_install_command}
   BUILD_IN_SOURCE TRUE
   BUILD_ALWAYS FALSE
   BUILD_BYPRODUCTS ${_imath_byproducts}

@@ -1,9 +1,9 @@
 //******************************************************************************
 // Copyright (c) 2005 Tweak Inc.
 // All rights reserved.
-// 
+//
 // SPDX-License-Identifier: Apache-2.0
-// 
+//
 //******************************************************************************
 
 #include <RvCommon/QTUtils.h>
@@ -84,6 +84,11 @@ static void init()
 #else
 #define DB(x)
 #define DBL(level, x)
+#endif
+
+// RV lazy build third party optional customization
+#if defined(RV_LAZY_BUILD_THIRD_PARTY_CUSTOMIZATION)
+    extern void rvLazyBuildThirdPartyCustomization();
 #endif
 
 namespace Rv {
@@ -239,7 +244,7 @@ static void setEnvVar(const string& var, const string& val)
 
 RvApplication::RvApplication(int argc, char** argv)
     : QObject(),
-      IPCore::Application(),
+      RvConsoleApplication(),
     m_newTimer(0),
     m_lazyBuildTimer(0),
     m_console(0),
@@ -257,10 +262,8 @@ RvApplication::RvApplication(int argc, char** argv)
     m_presentationDevice(0),
     m_executableNameCaps(UI_APPLICATION_NAME),
     m_desktopModule(0),
-    m_eventLibrary(INTERNAL_APPLICATION_NAME),
     m_dispatchAtomicInt(0)
 {
-    m_eventLibrary.setName("event-media-library");
 
 #ifdef PLATFORM_DARWIN
     sessionFromUrlPointer = sessionFromUrl;
@@ -411,6 +414,11 @@ void
 RvApplication::lazyBuild()
 {
     if (!m_console) m_console = new RvConsoleWindow();
+
+// RV lazy build third party optional customization
+#if defined(RV_LAZY_BUILD_THIRD_PARTY_CUSTOMIZATION)
+    rvLazyBuildThirdPartyCustomization();
+#endif    
 }
 
 RvConsoleWindow*
@@ -470,26 +478,15 @@ callRunCreateSession(void* a)
 void
 RvApplication::about()
 {
+    bool isReleaseBuild = strcmp(RELEASE_DESCRIPTION, "RELEASE") == 0;
 
     ostringstream headerComment;
 
-    if ((TWK_DEPLOY_MAJOR_VERSION() % 100) == 99 ||
-        TWK_DEPLOY_MINOR_VERSION() == 99 ||
-        TWK_DEPLOY_PATCH_LEVEL() == 99)
-    {
-        headerComment << "<h3><i><font color=red>Developer Version</font></i></h3>";
-    }
-    else
-    {
-        if (!strcmp(RELEASE_DESCRIPTION, "RELEASE"))
-        {
-            headerComment << "<h3>Release Version</h3>";
-        }
-        else
-        {
-            headerComment << "<h3>Release Development Version</h3>";
-        }
-    }
+    headerComment << "<h3>";
+    if (!isReleaseBuild) headerComment << "<i><font color=red>";
+    headerComment << RELEASE_DESCRIPTION << " Version";
+    if (!isReleaseBuild) headerComment << "</font></i>";
+    headerComment << "</h3>";
 
     ostringstream date;
     TWK_DEPLOY_SHOW_PROGRAM_BANNER(date);
@@ -718,8 +715,13 @@ RvApplication::newSessionFromFiles(const StringVector& files)
                 cerr << "ERROR: DesktopVideoModule failed" << endl;
         }
 
-        // Load audio/video output plugins
-        loadOutputPlugins("TWK_OUTPUT_PLUGIN_PATH");
+        if (!getenv("RV_SKIP_LOADING_VIDEO_OUTPUT_PLUGINS")) {
+
+            // Load audio/video output plugins
+            loadOutputPlugins("TWK_OUTPUT_PLUGIN_PATH");
+        } else {
+            cout << "WARNING: Skipping loading of video output plugins" << endl;
+        }
     }
 
     doc->session()->graph().setPhysicalDevices(videoModules());
@@ -973,7 +975,7 @@ RvApplication::prefs()
         QPushButton* b1 = box.addButton(tr("Cancel"), QMessageBox::RejectRole);
         QPushButton* b2 = box.addButton(tr("Disable Presentation Mode"), QMessageBox::AcceptRole);
 #ifdef PLATFORM_LINUX
-        box.setIconPixmap(QPixmap(qApp->applicationDirPath() + QString("/../Resources/RV.ico")).scaledToHeight(64));
+        box.setIconPixmap(QPixmap(qApp->applicationDirPath() + QString(RV_ICON_PATH_SUFFIX)).scaledToHeight(64));
 #else
         box.setIcon(QMessageBox::Critical);
 #endif
@@ -1575,7 +1577,7 @@ RvApplication::setPresentationMode(bool value)
                     box.setText(baseText + "\n\n" + detailedText);
                     box.setWindowModality(Qt::WindowModal);
                     QPushButton* b0 = box.addButton(tr("Ok"), QMessageBox::AcceptRole);
-                    box.setIconPixmap(QPixmap(qApp->applicationDirPath() + QString("/../Resources/RV.ico")).scaledToHeight(64));
+                    box.setIconPixmap(QPixmap(qApp->applicationDirPath() + QString(RV_ICON_PATH_SUFFIX)).scaledToHeight(64));
                     box.exec();
 
                     m_presentationMode = false;
@@ -1592,7 +1594,7 @@ RvApplication::setPresentationMode(bool value)
 		        box.setText(baseText + "\n\n" + exc.what());
                 box.setWindowModality(Qt::WindowModal);
                 QPushButton* b0 = box.addButton(tr("Ok"), QMessageBox::AcceptRole);
-                box.setIconPixmap(QPixmap(qApp->applicationDirPath() + QString("/../Resources/RV.ico")).scaledToHeight(64));
+                box.setIconPixmap(QPixmap(qApp->applicationDirPath() + QString(RV_ICON_PATH_SUFFIX)).scaledToHeight(64));
                 box.exec();
 
                 m_presentationMode = false;
@@ -1790,7 +1792,7 @@ RvApplication::findPresentationDevice(const std::string& dpath) const
 
         if (mindex >= 0)
         {
-            VideoModule* m = videoModules()[mindex];
+            VideoModule* m = videoModules()[mindex].get();
             openVideoModule(m);
             const VideoModule::VideoDevices& devs = m->devices();
             string dname = parts[1].toUtf8().constData();

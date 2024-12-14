@@ -7,27 +7,21 @@
 INCLUDE(ProcessorCount) # require CMake 3.15+
 PROCESSORCOUNT(_cpu_count)
 
-SET(_target
-    "RV_DEPS_GLEW"
-)
-
-SET(_version
-    "2.2.0"
-)
+RV_CREATE_STANDARD_DEPS_VARIABLES("RV_DEPS_GLEW" "e1a80a9f12d7def202d394f46e44cfced1104bfb" "make" "")
 
 SET(_download_url
-    "https://github.com/nigels-com/glew/archive/refs/tags/glew-${_version}.zip"
+    "https://github.com/nigels-com/glew/archive/${_version}.zip"
 )
 
 SET(_download_hash
-    f150f61074d049ff0423b09b18cd1ef6
+    9bfc689dabeb4e305ce80b5b6f28bcf9
 )
 
 SET(_install_dir
     ${RV_DEPS_BASE_DIR}/${_target}/install
 )
 
-IF(RV_TARGET_LINUX)
+IF(RHEL_VERBOSE)
   SET(_lib_dir
       ${_install_dir}/lib64
   )
@@ -50,20 +44,6 @@ SET(_glew_lib
     ${_lib_dir}/${_glew_lib_name}
 )
 
-SET(_make_command
-    make
-)
-
-IF(${RV_OSX_EMULATION})
-  SET(_darwin_x86_64
-      "arch" "${RV_OSX_EMULATION_ARCH}"
-  )
-
-  SET(_make_command
-      ${_darwin_x86_64} ${_make_command}
-  )
-ENDIF()
-
 EXTERNALPROJECT_ADD(
   ${_target}
   SOURCE_DIR ${RV_DEPS_BASE_DIR}/${_target}/src
@@ -72,9 +52,9 @@ EXTERNALPROJECT_ADD(
   URL_MD5 ${_download_hash}
   DOWNLOAD_NAME ${_target}_${_version}.zip
   DOWNLOAD_DIR ${RV_DEPS_DOWNLOAD_DIR}
-  CONFIGURE_COMMAND cd auto && ${_make_command}
+  CONFIGURE_COMMAND cd auto && ${_make_command} && cd .. && ${_make_command}
   BUILD_COMMAND ${_make_command} -j${_cpu_count} GLEW_DEST=${_install_dir}
-  INSTALL_COMMAND ${_make_command} install GLEW_DEST=${_install_dir}
+  INSTALL_COMMAND ${_make_command} install LIBDIR=${_lib_dir} GLEW_DEST=${_install_dir}
   BUILD_IN_SOURCE TRUE
   BUILD_ALWAYS FALSE
   BUILD_BYPRODUCTS ${_glew_lib}

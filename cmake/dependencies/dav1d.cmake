@@ -12,14 +12,14 @@ SET(_target
 )
 
 SET(_version
-    "1.0.0"
+    "1.4.3"
 )
 
 SET(_download_url
     "https://github.com/videolan/dav1d/archive/refs/tags/${_version}.zip"
 )
 SET(_download_hash
-    "425282a997804984c5c115aacb005ab4"
+    "2c62106fda87a69122dc8709243a34e8"
 )
 
 SET(_install_dir
@@ -28,11 +28,17 @@ SET(_install_dir
 SET(_include_dir
     ${_install_dir}/include
 )
-IF(RV_TARGET_LINUX)
+IF(RHEL_VERBOSE)
+  SET(_lib_dir_name
+      lib64
+  )
   SET(_lib_dir
       ${_install_dir}/lib64
   )
 ELSE()
+  SET(_lib_dir_name
+      lib
+  )
   SET(_lib_dir
       ${_install_dir}/lib
   )
@@ -46,12 +52,6 @@ SET(_dav1d_lib
     ${_lib_dir}/${_david_lib_name}
 )
 
-# Required for configuring ffmpeg build
-SET(RV_DEPS_DAVID_LIB_DIR
-    ${_lib_dir}
-    CACHE INTERNAL ""
-)
-
 SET(_configure_command
     meson
 )
@@ -59,12 +59,22 @@ SET(_make_command
     ninja
 )
 
-IF(${RV_OSX_EMULATION})
-  SET(_meson_cross_file
-      "${PROJECT_SOURCE_DIR}/src/build/meson_arch_x86_64.txt"
-  )
+IF(APPLE)
+  # Cross-file must be specified because if Rosetta is used to compile for x86_64 from ARM64,
+  # Meson still detects ARM64 as the default architecture.
+
+  IF(RV_TARGET_APPLE_X86_64)
+    SET(_meson_cross_file
+        "${PROJECT_SOURCE_DIR}/src/build/meson_arch_x86_64.txt"
+    )
+  ELSEIF(RV_TARGET_APPLE_ARM64)
+    SET(_meson_cross_file
+      "${PROJECT_SOURCE_DIR}/src/build/meson_arch_arm64.txt"
+    )
+  ENDIF()
+
   SET(_configure_command
-      ${_configure_command} "--cross-file" ${_meson_cross_file}
+    ${_configure_command} "--cross-file" ${_meson_cross_file}
   )
 ENDIF()
 
@@ -87,7 +97,7 @@ EXTERNALPROJECT_ADD(
   INSTALL_DIR ${_install_dir}
   URL ${_download_url}
   URL_MD5 ${_download_hash}
-  CONFIGURE_COMMAND ${_configure_command} ./_build --default-library=${_default_library} --prefix=${_install_dir} -Denable_tests=false -Denable_tools=false
+  CONFIGURE_COMMAND ${_configure_command} ./_build --libdir=${_lib_dir_name} --default-library=${_default_library} --prefix=${_install_dir} -Denable_tests=false -Denable_tools=false
   BUILD_COMMAND ${_make_command} -C _build
   INSTALL_COMMAND ${_make_command} -C _build install
   COMMAND ${CMAKE_COMMAND} -E copy_directory ${_lib_dir} ${RV_STAGE_LIB_DIR}
@@ -145,4 +155,33 @@ ADD_DEPENDENCIES(dependencies ${_target}-stage-target)
 SET(RV_DEPS_DAV1D_VERSION
     ${_version}
     CACHE INTERNAL "" FORCE
+)
+
+# FFmpeg customization adding dav1d codec support to FFmpeg
+SET_PROPERTY(
+  GLOBAL APPEND
+  PROPERTY "RV_FFMPEG_DEPENDS" RV_DEPS_DAV1D
+)
+SET_PROPERTY(
+  GLOBAL APPEND
+  PROPERTY "RV_FFMPEG_EXTRA_C_OPTIONS" "--extra-cflags=-I${_include_dir}"
+)
+IF(RV_TARGET_WINDOWS)
+  SET_PROPERTY(
+    GLOBAL APPEND
+    PROPERTY "RV_FFMPEG_EXTRA_LIBPATH_OPTIONS" "--extra-ldflags=-LIBPATH:${_lib_dir}"
+  )
+ELSE()
+  SET_PROPERTY(
+    GLOBAL APPEND
+    PROPERTY "RV_FFMPEG_EXTRA_LIBPATH_OPTIONS" "--extra-ldflags=-L${_lib_dir}"
+  )
+ENDIF()
+SET_PROPERTY(
+  GLOBAL APPEND
+  PROPERTY "RV_FFMPEG_EXTERNAL_LIBS" "--enable-libdav1d"
+)
+SET(RV_DEPS_DAVID_LIB_DIR
+    ${_lib_dir}
+    CACHE INTERNAL ""
 )

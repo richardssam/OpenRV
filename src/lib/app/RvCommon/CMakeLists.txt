@@ -45,6 +45,7 @@ SET(_sources
     RvConsoleWindow.cpp
     RvPreferences.cpp
     RvDocument.cpp
+    RvConsoleApplication.cpp
     RvApplication.cpp
     GLView.cpp
     TwkQTAction.cpp
@@ -171,7 +172,7 @@ TARGET_LINK_LIBRARIES(
          TwkApp
          TwkGLF
          TwkMath
-         EventMediaLibrary
+         PyMediaLibrary
          TwkQtChat
          TwkUtil
          Boost::thread
@@ -191,6 +192,7 @@ TARGET_LINK_LIBRARIES(
           TwkMovie
           TwkQtBase
           TwkQtCoreUtil
+          TwkPython
           arg
           stl_ext
           yaml
@@ -231,6 +233,17 @@ IF(RV_TARGET_WINDOWS)
   )
 ENDIF()
 
+IF(RV_TARGET_LINUX OR RV_TARGET_WINDOWS)
+  SET(_rv_icon_path_suffix_ "/../resources/RV.ico")
+ELSEIF(RV_TARGET_DARWIN)
+  SET(_rv_icon_path_suffix_ "/../Resources/RV.ico")
+ENDIF()
+
+SET(RV_ICON_PATH_SUFFIX
+    ${_rv_icon_path_suffix_}
+    CACHE STRING "RV's icon path suffix"
+)
+
 TARGET_COMPILE_OPTIONS(
   ${_target}
   PRIVATE -DARCH_STRING=\"${CMAKE_HOST_SYSTEM_PROCESSOR}\"
@@ -242,9 +255,27 @@ TARGET_COMPILE_OPTIONS(
           -DPLATFORM_VERSION=\"${CMAKE_SYSTEM_VERSION}\"
           -DRELEASE_DESCRIPTION=\"${RV_RELEASE_DESCRIPTION}\"
           -DINTERNAL_APPLICATION_NAME=\"${RV_INTERNAL_APPLICATION_NAME}\"
+          -DINTERNAL_ORGANIZATION_NAME=\"${RV_INTERNAL_ORGANIZATION_NAME}\"
+          -DINTERNAL_ORGANIZATION_DOMAIN=\"${RV_INTERNAL_ORGANIZATION_DOMAIN}\"
           -DUI_APPLICATION_NAME=\"${RV_UI_APPLICATION_NAME}\"
           -DCOPYRIGHT_TEXT=\"${RV_COPYRIGHT_TEXT}\"
+          -DRV_ICON_PATH_SUFFIX=\"${RV_ICON_PATH_SUFFIX}\"
 )
+
+GET_PROPERTY(
+  RV_LAZY_BUILD_THIRD_PARTY_CUSTOMIZATION GLOBAL
+  PROPERTY "RV_LAZY_BUILD_THIRD_PARTY_CUSTOMIZATION"
+)
+IF(RV_LAZY_BUILD_THIRD_PARTY_CUSTOMIZATION)
+  TARGET_COMPILE_OPTIONS(
+    ${_target}
+    PRIVATE "-DRV_LAZY_BUILD_THIRD_PARTY_CUSTOMIZATION=1"
+  )
+  TARGET_LINK_LIBRARIES(
+    ${_target}
+    PRIVATE ${RV_LAZY_BUILD_THIRD_PARTY_CUSTOMIZATION}
+  )
+ENDIF()
 
 RV_STAGE(TYPE "LIBRARY" TARGET ${_target})
 

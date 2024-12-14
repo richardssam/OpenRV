@@ -17,6 +17,7 @@
 #include <MuTwkApp/EventType.h>
 #include <MuTwkApp/MuInterface.h>
 #include <TwkApp/Menu.h>
+#include <TwkPython/PyLockObject.h>
 #include <Python.h>
 #include <TwkUtil/File.h>
 
@@ -254,6 +255,15 @@ namespace TwkApp
 
   void initPython( int argc, char** argv )
   {
+    // PreInitialize Python
+    // Note: This is necessary for Python to utilize environment variables like PYTHONUTF8
+    PyPreConfig preconfig;
+    PyPreConfig_InitPythonConfig(&preconfig);
+    PyStatus status=Py_PreInitialize(&preconfig);
+    if (PyStatus_Exception(status)) {
+      Py_ExitStatusException(status);
+    }
+
     Py_InitializeEx( 1 );
     static wchar_t delim = L'\0';
 
@@ -266,7 +276,16 @@ namespace TwkApp
 
     PySys_SetArgvEx( argc, w_argv, 0 );
 
-    PyLockObject::initialize();
+    //
+    //  Initialize python threading, acquire the GIL for the main
+    //  thread.
+    //
+    PyEval_InitThreads();
+
+    //
+    //  Release the GIL
+    //
+    (void)PyEval_SaveThread();
 
     //
     //  Add MuPy to the default Mu modules

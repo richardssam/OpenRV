@@ -12,6 +12,8 @@
 #include <implement.h>
 #endif
 
+#include <RvCommon/RvConsoleApplication.h>
+
 #ifdef PLATFORM_DARWIN
 #include <DarwinBundle/DarwinBundle.h>
 #else
@@ -100,16 +102,16 @@
 #undef uint16_t
 #endif
 
-#ifdef PLATFORM_DARWIN
-#include <DarwinBundle/DarwinBundle.h>
-#endif
-
 #ifdef RVIO_HW
 #include <TwkGLFFBO/FBOVideoDevice.h>
 #else
 #include <TwkGLFMesa/OSMesaVideoDevice.h>
 #endif
 
+// RVIO third party optional customization
+#if defined(RVIO_THIRD_PARTY_CUSTOMIZATION)
+    extern void rvioThirdPartyCustomization(TwkApp::Bundle& bundle, char* licarg);
+#endif
 
 typedef TwkContainer::StringProperty StringProperty;
 
@@ -1009,6 +1011,7 @@ utf8Main(int argc, char *argv[])
 
 
 #ifdef PLATFORM_DARWIN
+    QCoreApplication qapp(argc, argv);
     TwkApp::DarwinBundle bundle("RV", MAJOR_VERSION, MINOR_VERSION, REVISION_NUMBER);
 #endif
 
@@ -1029,6 +1032,9 @@ utf8Main(int argc, char *argv[])
     IPCore::ImageRenderer::defaultAllowPBOs(false);
     Imf::staticInitialize();
     IPCore::Application::cacheEnvVars();
+
+    TwkFB::GenericIO::init(); // Initialize TwkFB::GenericIO plugins statics
+    TwkMovie::GenericIO::init(); // Initialize TwkMovie::GenericIO plugins statics
 
     IPCore::AudioRenderer::setNoAudio(true);
 
@@ -1416,6 +1422,11 @@ utf8Main(int argc, char *argv[])
     bundle.addPathToEnvVar("OIIO_LIBRARY_PATH", bundle.appPluginPath("OIIO"));
     if (initscript) initPath = initscript;
 
+    // RVIO third party optional customization
+#if defined(RVIO_THIRD_PARTY_CUSTOMIZATION)
+    rvioThirdPartyCustomization(bundle, licarg);
+#endif
+
     try
     {
         TwkFB::loadProxyPlugins("TWK_FB_PLUGIN_PATH");
@@ -1438,7 +1449,7 @@ utf8Main(int argc, char *argv[])
 
     TwkFB::GenericIO::compileExtensionSet(predicateFileExtensions());
 
-    IPCore::Application app;
+    Rv::RvConsoleApplication app;
 
     //
     //  Initialize everything
@@ -1670,6 +1681,10 @@ utf8Main(int argc, char *argv[])
         //
 
         if (!writer->write(outmov, outfile, writeRequest)) exit (-2);
+
+        // clean up any frame buffers we allocated writing the movie
+        //
+        MovieRV::uninit();
     }
     catch (TwkExc::Exception& exc)
     {
@@ -1691,6 +1706,9 @@ utf8Main(int argc, char *argv[])
     pthread_win32_thread_detach_np();
     pthread_win32_process_detach_np();
 #endif
+
+    TwkMovie::GenericIO::shutdown(); // Shutdown TwkMovie::GenericIO plugins
+    TwkFB::GenericIO::shutdown(); // Shutdown TwkFB::GenericIO plugins
 
     TwkFB::ThreadPool::shutdown();
     return 0;

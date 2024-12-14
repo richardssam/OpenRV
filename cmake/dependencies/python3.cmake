@@ -16,23 +16,51 @@ SET(_pyside2_target
     "RV_DEPS_PYSIDE2"
 )
 
+SET(PYTHON_VERSION_MAJOR
+    3
+)
+
+RV_VFX_SET_VARIABLE(
+  PYTHON_VERSION_MINOR
+  CY2023 "10"
+  CY2024 "11"
+)
+
+RV_VFX_SET_VARIABLE(
+  PYTHON_VERSION_PATCH
+  CY2023 "13"
+  CY2024 "9"
+)
+
 SET(_python3_version
-    "3.9.17"
+    "${PYTHON_VERSION_MAJOR}.${PYTHON_VERSION_MINOR}.${PYTHON_VERSION_PATCH}"
+)
+
+SET(RV_DEPS_PYTHON_VERSION_MAJOR
+    ${PYTHON_VERSION_MAJOR}
+)
+SET(RV_DEPS_PYTHON_VERSION_SHORT
+    "${PYTHON_VERSION_MAJOR}.${PYTHON_VERSION_MINOR}"
 )
 
 SET(_opentimelineio_version
     "0.15"
 )
 
-SET(_pyside2_version
-    "5.15.10"
+RV_VFX_SET_VARIABLE(
+  _pyside2_version
+  CY2023 "5.15.10"
+  # Need 5.15.11+ to support Python 3.11.
+  CY2024 "5.15.11"
 )
 
 SET(_python3_download_url
     "https://github.com/python/cpython/archive/refs/tags/v${_python3_version}.zip"
 )
-SET(_python3_download_hash
-    "c7b5d223bf9e80c766ccae7c88ff1e66"
+RV_VFX_SET_VARIABLE(
+  _python3_download_hash
+  CY2023 "21b32503f31386b37f0c42172dfe5637"
+  CY2024 "392eccd4386936ffcc46ed08057db3e7"
 )
 
 SET(_opentimelineio_download_url
@@ -43,10 +71,12 @@ SET(_opentimelineio_git_tag
 )
 
 SET(_pyside2_archive_url
-    "https://download.qt.io/official_releases/QtForPython/pyside2/PySide2-${_pyside2_version}-src/pyside-setup-opensource-src-${_pyside2_version}.zip"
+    "https://mirrors.ocf.berkeley.edu/qt/official_releases/QtForPython/pyside2/PySide2-${_pyside2_version}-src/pyside-setup-opensource-src-${_pyside2_version}.zip"
 )
-SET(_pyside2_download_hash
-    "87841aaced763b6b52e9b549e31a493f"
+RV_VFX_SET_VARIABLE(
+  _pyside2_download_hash
+  CY2023 "87841aaced763b6b52e9b549e31a493f"
+  CY2024 "8f652b08c1c74f9a80a2c0f16ff2a4ca"
 )
 
 SET(_install_dir
@@ -58,10 +88,6 @@ SET(_source_dir
 SET(_build_dir
     ${RV_DEPS_BASE_DIR}/${_python3_target}/build
 )
-
-STRING(REPLACE "." ";" _version_list ${_python3_version})
-LIST(GET _version_list 0 _python3_version_major)
-LIST(GET _version_list 1 _python3_version_minor)
 
 IF(RV_TARGET_WINDOWS)
 
@@ -99,15 +125,15 @@ LIST(APPEND _python3_make_command "--output-dir")
 LIST(APPEND _python3_make_command ${_install_dir})
 LIST(APPEND _python3_make_command "--temp-dir")
 LIST(APPEND _python3_make_command ${_build_dir})
-LIST(APPEND _python3_make_command "--openssl-dir")
-LIST(APPEND _python3_make_command ${RV_DEPS_BASE_DIR}/${_target}/install)
+IF(DEFINED RV_DEPS_OPENSSL_INSTALL_DIR)
+  LIST(APPEND _python3_make_command "--openssl-dir")
+  LIST(APPEND _python3_make_command ${RV_DEPS_OPENSSL_INSTALL_DIR})
+ENDIF()
 IF(RV_TARGET_WINDOWS)
   LIST(APPEND _python3_make_command "--opentimelineio-source-dir")
   LIST(APPEND _python3_make_command ${rv_deps_opentimelineio_SOURCE_DIR})
-ENDIF()
-
-IF(${RV_OSX_EMULATION})
-  LIST(APPEND _python3_make_command --arch=${RV_OSX_EMULATION_ARCH})
+  LIST(APPEND _python3_make_command "--python-version")
+  LIST(APPEND _python3_make_command "${PYTHON_VERSION_MAJOR}${PYTHON_VERSION_MINOR}")
 ENDIF()
 
 SET(_pyside2_make_command_script
@@ -124,12 +150,16 @@ LIST(APPEND _pyside2_make_command "--output-dir")
 LIST(APPEND _pyside2_make_command ${_install_dir})
 LIST(APPEND _pyside2_make_command "--temp-dir")
 LIST(APPEND _pyside2_make_command ${_build_dir})
-LIST(APPEND _pyside2_make_command "--openssl-dir")
-LIST(APPEND _pyside2_make_command ${RV_DEPS_BASE_DIR}/${_target}/install)
+IF(DEFINED RV_DEPS_OPENSSL_INSTALL_DIR)
+  LIST(APPEND _pyside2_make_command "--openssl-dir")
+  LIST(APPEND _pyside2_make_command ${RV_DEPS_OPENSSL_INSTALL_DIR})
+ENDIF()
 LIST(APPEND _pyside2_make_command "--python-dir")
 LIST(APPEND _pyside2_make_command ${_install_dir})
 LIST(APPEND _pyside2_make_command "--qt-dir")
 LIST(APPEND _pyside2_make_command ${RV_DEPS_QT5_LOCATION})
+LIST(APPEND _pyside2_make_command "--python-version")
+LIST(APPEND _pyside2_make_command "${RV_DEPS_PYTHON_VERSION_SHORT}")
 
 IF(RV_TARGET_WINDOWS)
   IF(CMAKE_BUILD_TYPE MATCHES "^Debug$")
@@ -142,7 +172,7 @@ IF(RV_TARGET_WINDOWS)
     )
   ENDIF()
   SET(_python_name
-      python${_python3_version_major}${_python3_version_minor}${PYTHON3_EXTRA_WIN_LIBRARY_SUFFIX_IF_DEBUG}
+      python${PYTHON_VERSION_MAJOR}${PYTHON_VERSION_MINOR}${PYTHON3_EXTRA_WIN_LIBRARY_SUFFIX_IF_DEBUG}
   )
   SET(_include_dir
       ${_install_dir}/include
@@ -165,9 +195,21 @@ IF(RV_TARGET_WINDOWS)
   SET(_python3_executable
       ${_bin_dir}/python${PYTHON3_EXTRA_WIN_LIBRARY_SUFFIX_IF_DEBUG}.exe
   )
+
+  # When building in Debug, we need the Release name also: see below for add_custom_command.
+  SET(_python_release_libname
+      python${PYTHON_VERSION_MAJOR}${PYTHON_VERSION_MINOR}${CMAKE_STATIC_LIBRARY_SUFFIX}
+  )
+  SET(_python_release_libpath
+      ${_lib_dir}/${_python_release_libname}
+  )
+
+  SET(_python_release_in_bin_libpath
+      ${_bin_dir}/${_python_release_libname}
+  )
 ELSE() # Not WINDOWS
   SET(_python_name
-      python${_python3_version_major}.${_python3_version_minor}
+      python${PYTHON_VERSION_MAJOR}.${PYTHON_VERSION_MINOR}
   )
   SET(_include_dir
       ${_install_dir}/include/${_python_name}
@@ -193,9 +235,26 @@ SET(_requirements_install_command
     "${_python3_executable}" -m pip install --upgrade -r "${_requirements_file}"
 )
 
+IF(RV_TARGET_WINDOWS)
+  SET(_patch_python3_11_command 
+      "patch -p1 < ${CMAKE_CURRENT_SOURCE_DIR}/patch/python.3.11.openssl.props.patch &&\
+       patch -p1 < ${CMAKE_CURRENT_SOURCE_DIR}/patch/python.3.11.python.props.patch &&\
+       patch -p1 < ${CMAKE_CURRENT_SOURCE_DIR}/patch/python.3.11.get_externals.bat.patch"
+  )
+
+  RV_VFX_SET_VARIABLE(
+    _patch_command
+    CY2023 ""
+    CY2024 "${_patch_python3_11_command}"
+  )
+  # Split the command into a semi-colon separated list.
+  separate_arguments(_patch_command)
+  STRING(REGEX REPLACE ";+" ";" _patch_command "${_patch_command}")
+ENDIF()
+
 EXTERNALPROJECT_ADD(
   ${_python3_target}
-  DOWNLOAD_NAME ${_python3_target}_${_version}.zip
+  DOWNLOAD_NAME ${_python3_target}_${_python3_version}.zip
   DOWNLOAD_DIR ${RV_DEPS_DOWNLOAD_DIR}
   DOWNLOAD_EXTRACT_TIMESTAMP TRUE
   SOURCE_DIR ${_source_dir}
@@ -203,6 +262,7 @@ EXTERNALPROJECT_ADD(
   URL ${_python3_download_url}
   URL_MD5 ${_python3_download_hash}
   DEPENDS OpenSSL::Crypto OpenSSL::SSL
+  PATCH_COMMAND "${_patch_command}"
   CONFIGURE_COMMAND ${_python3_make_command} --configure
   BUILD_COMMAND ${_python3_make_command} --build
   INSTALL_COMMAND ${_python3_make_command} --install
@@ -223,6 +283,19 @@ ADD_CUSTOM_COMMAND(
   COMMAND cmake -E touch ${${_python3_target}-requirements-flag}
   DEPENDS ${_python3_target} ${_requirements_file}
 )
+
+IF(RV_TARGET_WINDOWS
+   AND CMAKE_BUILD_TYPE MATCHES "^Debug$"
+)
+  # OCIO v2.2's pybind11 doesn't find python<ver>.lib in Debug since the name is python<ver>_d.lib.
+  ADD_CUSTOM_COMMAND(
+    TARGET ${_python3_target}
+    POST_BUILD
+    COMMENT "Copying Debug Python lib as a unversionned file for Debug"
+    COMMAND cmake -E copy_if_different ${_python3_implib} ${_python_release_libpath}
+    COMMAND cmake -E copy_if_different ${_python3_implib} ${_python_release_in_bin_libpath} DEPENDS ${_python3_target} ${_requirements_file}
+  )
+ENDIF()
 
 SET(${_pyside2_target}-build-flag
     ${_install_dir}/${_pyside2_target}-build-flag

@@ -11,13 +11,147 @@
 #include <unzip.h>
 #include <yaml.h>
 #include <TwkApp/Bundle.h>
+#include <TwkUtil/File.h>
+#include <TwkQtCoreUtil/QtConvert.h>
 #include <stl_ext/string_algo.h>
 #include <fstream>
 #include <string_view>
+#include <iostream>
 
 namespace Rv
 {
   using namespace std;
+
+  QString extractFile(unzFile uf, const string& outputPath) {
+    char filename[256];
+    unz_file_info fileInfo;
+    
+    if (unzGetCurrentFileInfo(uf, &fileInfo, filename, sizeof(filename), nullptr, 0, nullptr, 0) != UNZ_OK) {
+        cerr << "ERROR: Unable to get file info" << endl;
+        return "";
+    }
+    
+    if (unzOpenCurrentFile(uf) != UNZ_OK) {
+        cerr << "ERROR: Unable to open file in zip" << endl;
+        return "";
+    }
+    
+    string fullPath = outputPath + "/" + filename;
+    FILE* outFile = std::fopen(fullPath.c_str(), "wb");
+    if (outFile == nullptr) {
+        cerr << "ERROR: Unable to open output file" << endl;
+        unzCloseCurrentFile(uf);
+        return "";
+    }
+    
+    char buffer[8192];
+    int bytesRead = 0;
+    while ((bytesRead = unzReadCurrentFile(uf, buffer, sizeof(buffer))) > 0) {
+        fwrite(buffer, 1, bytesRead, outFile);
+    }
+    
+    fclose(outFile);
+    unzCloseCurrentFile(uf);
+
+    return QString::fromStdString(fullPath);
+  }
+
+  vector<QString> unzipBundle(const string& zipFilePath, const string& outputPath) 
+  {
+    vector<QString> includedPackages;
+
+    // Opening zip file
+    unzFile uf = unzOpen(zipFilePath.c_str());
+    if (uf == nullptr) {
+      cerr << "ERROR: Unable to open zip file" << endl;
+      return {};
+    }
+    
+    // Checking for the presence of files
+    if (unzGoToFirstFile(uf) != UNZ_OK) {
+      cerr << "ERROR: Unable to find first file in zip" << endl;
+      unzClose(uf);
+      return {};
+    }
+    
+    // Extracting each file in the zip
+    do {
+      QString extractedFilePath = extractFile(uf, outputPath);
+      if (extractedFilePath == "") {
+        cerr << "ERROR: Unable to extract zip file" << endl;
+      } else {
+        includedPackages.push_back(extractedFilePath);
+      }
+    } while (unzGoToNextFile(uf) == UNZ_OK);
+    
+    unzClose(uf);
+
+    return includedPackages;
+  }
+
+  bool PackageManager::isBundle(const QString& infileNonCanonical)
+  {
+
+    // Getting package file extension
+    string filePath = infileNonCanonical.toStdString();
+    size_t dot = filePath.rfind('.');
+    if (dot == string::npos) {
+      cerr << "ERROR: Unsupported file type. Ensure each package has the extension 'rvpkg', 'zip' or 'rvpkgs'" << endl;
+      return false;
+    }
+
+    // Edge case, last character is dot
+    if (dot == filePath.size() - 1) {
+      cerr << "ERROR: File paths cannot end with a dot/period. Extension cannot be determined." << endl;
+      return false;
+    }
+
+    // File extension
+    string ext = filePath.substr(dot + 1);
+    if (ext == "rvpkgs") {
+      return true;
+
+    // May or may not be a bundle
+    } else if (ext == "zip") {
+
+      unzFile uf = unzOpen(filePath.c_str());
+      if (!uf) {
+        cerr << "ERROR: Failed to open zip file" << endl;
+        return false;
+      }
+
+      // Checking for presence of PACKAGE file
+      if (unzGoToFirstFile(uf) == UNZ_OK) {
+        do {
+          unz_file_info fileInfo;
+          char fileName[256];
+          if (
+            unzGetCurrentFileInfo(uf, &fileInfo, fileName, sizeof(fileName), nullptr, 0, nullptr, 0) == UNZ_OK
+            && strcmp(fileName, "PACKAGE") == 0
+          ) {
+            return false;
+          }
+        } while (unzGoToNextFile(uf) == UNZ_OK);
+      }
+
+      unzClose(uf);
+      return true; // Zip does not contain a PACKAGE file, therefore assume it is a bundle
+    }
+
+    return false; // Extension is not zip or rvpkgs
+  }
+
+  vector<QString> PackageManager::handleBundle(const QString& bundlePath, const QString& outputPath) {
+
+    // Attempting to unzip bundle into the Packages directory
+    vector<QString> includedPackages = unzipBundle(bundlePath.toStdString(), outputPath.toStdString());
+    if (includedPackages.size() == 0) {
+        cerr << "ERROR: Unable to unzip bundle." << endl;
+        return {};
+    }
+
+    return includedPackages;
+  }
 
   bool PackageManager::m_ignorePrefs = false;
 
@@ -398,7 +532,7 @@ namespace Rv
 
         if( unzLocateFile( file, filename.toUtf8().data(), 1 ) != UNZ_OK )
         {
-          cout << "ERROR: reading zip file " << package.file.toUtf8().data()
+          cerr << "ERROR: reading zip file " << package.file.toUtf8().data()
                << endl;
           break;
         }
@@ -418,7 +552,7 @@ namespace Rv
             bool success = outdir.mkpath( "." );
             if( !success )
             {
-              cout << "ERROR: Failed to create needed auxiliary directory: " +
+              cerr << "ERROR: Failed to create needed auxiliary directory: " +
                           outdir.absolutePath().toStdString()
                    << endl;
             }
@@ -509,7 +643,7 @@ namespace Rv
 
           if( system( cmd.c_str() ) == -1 )
           {
-            cout << "ERROR: executing command " << cmd << endl;
+            cerr << "ERROR: executing command " << cmd << endl;
           }
 
           // QProcess process;
@@ -672,6 +806,7 @@ namespace Rv
     QFileInfo pfile( package.file );
     QRegExp rvpkgRE( "(.*)-[0-9]+\\.[0-9]+\\.rvpkg" );
     QRegExp zipRE( "(.*)\\.zip" );
+    QRegExp rvpkgsRE( "(.*)-[0-9]+\\.[0-9]+\\.rvpkgs" );
     QString pname = package.baseName;
 
     if( !supportdir.exists( pname ) ) supportdir.mkdir( pname );
@@ -892,8 +1027,10 @@ namespace Rv
     return true;
   }
 
+  // Called on every package on Preference menu load and everytime a new package or bundle is added
   void PackageManager::loadPackageInfo( const QString& infileNonCanonical )
   {
+
     if( findPackageIndexByZip( infileNonCanonical ) == -1 )
     {
       //
@@ -925,9 +1062,9 @@ namespace Rv
         m_packageMap.insert( infile, m_packages.size() - 1 );
 
         QFileInfo finfo( infile );
-        QFileInfo fdir( finfo.absolutePath() );
-        m_packages.back().fileWritable = finfo.isWritable();
-        m_packages.back().dirWritable = fdir.isWritable();
+
+        m_packages.back().fileWritable = TwkUtil::isWritable( TwkQtCoreUtil::UTF8::qconvert(infile).c_str() );
+        m_packages.back().dirWritable = TwkUtil::isWritable( TwkQtCoreUtil::UTF8::qconvert(finfo.absolutePath()).c_str() );
 
         unz_global_info info;
         unzGetGlobalInfo( file, &info );
@@ -975,7 +1112,7 @@ namespace Rv
 
           if( !yaml_parser_initialize( &parser ) )
           {
-            cout << "ERROR: Could not initialize the YAML parser object"
+            cerr << "ERROR: Could not initialize the YAML parser object"
                  << endl;
             return;
           }
@@ -1001,7 +1138,7 @@ namespace Rv
           {
             if( !yaml_parser_parse( &parser, &input_event ) )
             {
-              cout << "ERROR: YAML parser failed on PACKAGE file in "
+              cerr << "ERROR: YAML parser failed on PACKAGE file in "
                    << infile.toStdString() << endl;
               break;
             }
@@ -1498,7 +1635,8 @@ namespace Rv
         for( size_t q = 0; q < entries.size(); q++ )
         {
           if( entries[q].fileName().endsWith( ".zip" ) ||
-              entries[q].fileName().endsWith( "rvpkg" ) )
+              entries[q].fileName().endsWith( "rvpkg" ) ||
+              entries[q].fileName().endsWith( "rvpkgs" ))
           {
             loadPackageInfo( entries[q].filePath() );
           }
@@ -1581,10 +1719,27 @@ namespace Rv
     //
 
     QRegExp rvpkgRE( "(.*)-[0-9]+\\.[0-9]+\\.rvpkg" );
+    QRegExp rvpkgsRE( "(.*)-[0-9]+\\.[0-9]+\\.rvpkgs" ); // Bundle
     QRegExp zipRE( "(.*)\\.zip" );
 
     for( size_t i = 0; i < files.size(); i++ )
     {
+
+      // Unpacking any bundles
+      if (isBundle(files[i])) {
+        cout << "INFO: Bundle detected, adding subpackages now." << endl;
+
+        // Installing bundle
+        vector<QString> includedPackages = handleBundle(files[i], path);
+        if (includedPackages.size() > 0) {
+          cout << "INFO: Bundle subpackages added." << endl;
+        } else {
+          cerr << "ERROR: Unable to add subpackages." << endl;
+        }
+
+        continue; // Bundle itself does not need to be copied
+      };
+
       QFileInfo info( files[i] );
 
       if( !info.exists() )
@@ -1596,11 +1751,12 @@ namespace Rv
       }
 
       if( !rvpkgRE.exactMatch( info.fileName() ) &&
-          !zipRE.exactMatch( info.fileName() ) )
+          !zipRE.exactMatch( info.fileName() ) &&
+          !rvpkgsRE.exactMatch(info.fileName() ) )
       {
         QString t( "ERROR: Illegal package file name: " );
         t += info.fileName();
-        t += ", should be either <name>.zip or \n<name>-<version>.rvpkg";
+        t += ", should be either <name>.zip, \n<name>-<version>.rvpkg or <name>-<version>.rvpkgs";
         informPackageFailedToCopy( t );
         return false;
       }
@@ -1618,11 +1774,15 @@ namespace Rv
     }
 
     makeSupportDirTree( dir );
-    dir.cd( "Packages" );
+    dir.cd( "Packages" ); // User should not include the Packages directory in their add directory argument
     QStringList nocopy;
 
     for( size_t i = 0; i < files.size(); i++ )
     {
+
+      // Bundles do not need to be copied
+      if (isBundle(files[i])) continue;
+
       QFileInfo info( files[i] );
       QString fromFile( files[i] );
       QString toFile( dir.absoluteFilePath( info.fileName() ) );
@@ -1768,9 +1928,9 @@ namespace Rv
   bool PackageManager::installDependantPackages( const QString& msg )
   {
     return yesOrNo( "Some Packages Depend on This One",
-                    "Can't uninstall package because some other packages "
+                    "Can't install package because some other packages "
                     "dependend on this one.",
-                    msg, "Try and uninstall others first?" );
+                    msg, "Try and install others first?" );
   }
 
   bool PackageManager::overwriteExistingFiles( const QString& msg )
@@ -1782,7 +1942,7 @@ namespace Rv
 
   void PackageManager::errorMissingPackageDependancies( const QString& msg )
   {
-    cout << "ERROR: Some package dependancies are missing" << endl
+    cerr << "ERROR: Some package dependancies are missing" << endl
          << msg.toUtf8().constData() << endl;
   }
 
@@ -1802,7 +1962,7 @@ namespace Rv
 
   void PackageManager::errorModeFileWriteFailed( const QString& file )
   {
-    cout << "ERROR: File write failed: " << file.toUtf8().constData() << endl;
+    cerr << "ERROR: File write failed: " << file.toUtf8().constData() << endl;
   }
 
   void PackageManager::informPackageFailedToCopy( const QString& msg )
@@ -1928,13 +2088,13 @@ namespace Rv
       path = p;
     else
       path = QDir::homePath();
-    name = QFileInfo( path ).canonicalFilePath() + "/Autodesk/" +
+    name = QFileInfo( path ).canonicalFilePath() + "/" + INTERNAL_ORGANIZATION_NAME + "/" +
            INTERNAL_APPLICATION_NAME + ".ini";
 #elif defined( PLATFORM_DARWIN )
-    name = QDir::homePath() + "/Library/Preferences/com.Autodesk." +
+    name = QDir::homePath() + "/Library/Preferences/com." + INTERNAL_ORGANIZATION_NAME + "." +
            INTERNAL_APPLICATION_NAME + ".plist";
 #else
-    name = QDir::homePath() + "/.config/Autodesk/" + INTERNAL_APPLICATION_NAME +
+    name = QDir::homePath() + "/.config/" + INTERNAL_ORGANIZATION_NAME + "/" + INTERNAL_APPLICATION_NAME +
            ".conf";
 #endif
 
@@ -1954,8 +2114,8 @@ namespace Rv
     QSettings::setDefaultFormat( QSettings::IniFormat );
 #endif
 
-    QCoreApplication::setOrganizationName( "Autodesk" );
-    QCoreApplication::setOrganizationDomain( "autodesk.com" );
+    QCoreApplication::setOrganizationName( INTERNAL_ORGANIZATION_NAME );
+    QCoreApplication::setOrganizationDomain( INTERNAL_ORGANIZATION_DOMAIN );
 
     //
     //  If -noPrefs command line flag was used, use empty alternate
@@ -2015,7 +2175,7 @@ namespace Rv
     QSettings::Format format( QSettings::NativeFormat );
 #endif
     QSettings* qs = new QSettings(
-        format, QSettings::UserScope, "Autodesk",
+        format, QSettings::UserScope, INTERNAL_ORGANIZATION_NAME,
         PackageManager::ignoringPrefs() ? "RVALT" : INTERNAL_APPLICATION_NAME );
     qs->setFallbacksEnabled( false );
 

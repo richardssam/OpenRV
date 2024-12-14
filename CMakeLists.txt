@@ -3,25 +3,17 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 #
-CMAKE_MINIMUM_REQUIRED(VERSION 3.24)
 
-SET(RV_MAJOR_VERSION
-    "1"
-    CACHE STRING "RV's version major"
-)
-SET(RV_MINOR_VERSION
-    "0"
-    CACHE STRING "RV's version minor"
-)
-SET(RV_REVISION_NUMBER
-    "0"
-    CACHE STRING "RV's revision number"
-)
+# Need 3.27 for Boost 1.82 (FindBoost.cmake).
+CMAKE_MINIMUM_REQUIRED(VERSION 3.27)
 
-SET(RV_VERSION_YEAR
-    "2023"
-    CACHE STRING "RV's year of release."
-)
+# These variables are parsed by sphinx for the documentation. One-line formatting facilitates parsing and readability.
+# cmake-format: off
+SET(RV_MAJOR_VERSION "2" CACHE STRING "RV's version major")
+SET(RV_MINOR_VERSION "1" CACHE STRING "RV's version minor")
+SET(RV_REVISION_NUMBER "0" CACHE STRING "RV's revision number")
+SET(RV_VERSION_YEAR "2024" CACHE STRING "RV's year of release.")
+# cmake-format: on
 
 IF(NOT CMAKE_BUILD_TYPE)
   SET(CMAKE_BUILD_TYPE
@@ -35,15 +27,17 @@ IF(CMAKE_BUILD_TYPE
   MESSAGE(FATAL_ERROR "Invalid value for CMAKE_BUILD_TYPE: ${CMAKE_BUILD_TYPE}")
 ENDIF()
 
-IF(${CMAKE_BUILD_TYPE} STREQUAL "Debug")
-  SET(RV_RELEASE_DESCRIPTION
-      "Debug"
-  )
-ELSE()
-  # as checked 'src/lib/app/RvCommon/RvApplication.cpp'
-  SET(RV_RELEASE_DESCRIPTION
-      "RELEASE"
-  )
+IF(NOT RV_RELEASE_DESCRIPTION)
+  IF(${CMAKE_BUILD_TYPE} STREQUAL "Debug")
+    SET(RV_RELEASE_DESCRIPTION
+        "DEVELOPMENT"
+    )
+  ELSE()
+    # as checked 'src/lib/app/RvCommon/RvApplication.cpp'
+    SET(RV_RELEASE_DESCRIPTION
+        "RELEASE"
+    )
+  ENDIF()
 ENDIF()
 
 SET(RV_UI_APPLICATION_NAME
@@ -54,6 +48,21 @@ SET(RV_INTERNAL_APPLICATION_NAME
     "OpenRV"
     CACHE STRING "RV's internal application name"
 )
+SET(RV_INTERNAL_ORGANIZATION_NAME
+    "ASWF"
+    CACHE STRING "RV's internal organization name"
+)
+SET(RV_INTERNAL_ORGANIZATION_DOMAIN
+    "aswf.com"
+    CACHE STRING "RV's internal organization domain"
+)
+
+IF(NOT RV_APPLICATION_TYPE)
+  SET(RV_APPLICATION_TYPE
+      ${RV_INTERNAL_APPLICATION_NAME}
+  )
+ENDIF()
+
 PROJECT(
   open-rv
   VERSION "${RV_MAJOR_VERSION}.${RV_MINOR_VERSION}.${RV_REVISION_NUMBER}"
@@ -72,6 +81,8 @@ SET(CMAKE_BUILD_TYPE
 
 MESSAGE(STATUS "Build type: ${CMAKE_BUILD_TYPE}")
 
+MESSAGE("PROJECT DIR ${PROJECT_SOURCE_DIR}")
+
 # Specify our own CMake modules so we can include them right after.
 SET(CMAKE_MODULE_PATH
     ${CMAKE_MODULE_PATH} ${PROJECT_SOURCE_DIR}/cmake/defaults ${PROJECT_SOURCE_DIR}/cmake/dependencies ${PROJECT_SOURCE_DIR}/cmake/globals
@@ -82,6 +93,7 @@ INCLUDE(rv_options) # RV's build options
 INCLUDE(rv_targets) # RV's build platform definitions
 INCLUDE(rv_globals) # RV's CMake-build global variables
 INCLUDE(rv_stage) # RV's local appplication packaging
+INCLUDE(rv_vfx)
 INCLUDE(CTest)
 
 # The 'cxx_defaults' module will sets global C/C++ compiler defaults Note that variable such as 'CMAKE_CXX_COMPILER_ID' is only available after the 'project'
