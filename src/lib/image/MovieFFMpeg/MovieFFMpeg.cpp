@@ -608,7 +608,7 @@ const char* slowRandomAccessCodecsArray[] = {
     "div6", "divx", "dnxhd", "dx50", "h263", "h264", "i263", "iv31", "iv32",
     "m4s2", "mp42", "mp43", "mp4s", "mp4v", "mpeg4", "mpg1", "mpg3", "mpg4",
     "pim1", "s263", "svq1", "svq3", "u263", "vc1", "vc1_vdpau", "vc1image",
-    "viv1", "wmv3", "wmv3_vdpau", "wmv3image", "xith", "xvid", "libdav1d",
+    "viv1", "wmv3", "wmv3_vdpau", "wmv3image", "xith", "xvid", "libdav1d", "jpeg2000",
     0 };
 
 const char* supportedEncodingCodecsArray[] = {
@@ -1275,6 +1275,7 @@ MovieFFMpegReader::openAVCodec(int index, AVCodecContext** avCodecContext)
 
     // Open the codec
     (*avCodecContext)->thread_count = m_io->codecThreads();
+    (*avCodecContext)->thread_type = FF_THREAD_FRAME;
     if (avcodec_open2(*avCodecContext, avCodec, 0) < 0)
     {
         cout << "ERROR: MovieFFMpeg: Failed to open codec '" <<
