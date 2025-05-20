@@ -18,7 +18,7 @@ def hook_function(
     """A hook for the annotation schema"""
     for layer in in_timeline.layers:
         if layer.name == "Paint":
-            if isinstance(layer.layer_range, otio._opentime.TimeRange):
+            if isinstance(layer.layer_range, otio.opentime.TimeRange):
                 time_range = layer.layer_range
             else:
                 time_range = otio.opentime.TimeRange(
@@ -36,9 +36,7 @@ def hook_function(
             frame_component = f"{paint_node}.frame:{frame}"
 
             # Set properties on the paint component of the RVPaint node
-            effectHook.set_rv_effect_props(
-                paint_component, {"nextId": stroke_id + 1, "show": True}
-            )
+            effectHook.set_rv_effect_props(paint_component, {"nextId": stroke_id + 1})
 
             # Add and set properties on the pen component of the RVPaint node
             effectHook.add_rv_effect_props(

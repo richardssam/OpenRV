@@ -1773,6 +1773,8 @@ namespace IPCore
             m_renderer->clearState();
         clearHistory();
 
+        m_uiNameCache.clear();
+
         //
         //  Give code a chance to react to the viewnode changing away
         //  from the current, and to the defaultSequence.  If we do this
@@ -1790,6 +1792,7 @@ namespace IPCore
         checkInDisplayImage();
 
         m_inc = 1;
+        const auto mode = cachingMode();
         setCaching(NeverCache);
         graph().cache().lock();
         graph().cache().clearAllButFrame(currentFrame(), true);
@@ -1821,6 +1824,9 @@ namespace IPCore
                 graph().connectDisplayGroup(m_controlVideoDevice);
                 graph().setDevice(m_controlVideoDevice, m_outputVideoDevice);
             }
+
+            // Restore caching mode
+            setCaching(mode);
         }
     }
 

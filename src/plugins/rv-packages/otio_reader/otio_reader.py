@@ -60,21 +60,6 @@ class NoNodeFromHook(otio.exceptions.OTIOError):
     pass
 
 
-def read_otio_string(otio_string: str, host_prefix: str | None = None) -> object | None:
-    """
-    Main entry point to expand a given otio string into the current RV session.
-
-    Returns the top level node created that represents this otio
-    timeline.
-    """
-    otio_obj = otio.adapters.read_from_string(otio_string)
-    timeline = otio_obj["otio"]
-
-    context = {"sg_url": host_prefix} if host_prefix else None
-
-    return create_rv_node_from_otio(timeline, context), timeline.global_start_time
-
-
 def read_otio_file(otio_file):
     """
     Main entry point to expand a given otio (or file otio can read)
@@ -85,7 +70,12 @@ def read_otio_file(otio_file):
     """
     input_otio = otio.adapters.read_from_file(otio_file)
     context = {"otio_file": otio_file}
-    return create_rv_node_from_otio(input_otio, context)
+
+    commands.addSourceBegin()
+    ret = create_rv_node_from_otio(input_otio, context)
+    commands.addSourceEnd()
+
+    return ret
 
 
 def _run_hook(hook_name, otio_obj, context={}, optional=True):
@@ -260,6 +250,9 @@ def _create_track(in_seq, context=None):
             "frame": [],
         }
 
+        # RV supports only one frame rate per sequence, so we'll use the rate of the first item in the sequence as our sequence rate
+        seq_rate = None
+
         for thing in items_to_serialize:
             if isinstance(thing, tuple):
                 result = _create_transition(*thing, context=context)
@@ -271,11 +264,14 @@ def _create_track(in_seq, context=None):
                 result = create_rv_node_from_otio(thing, context)
                 edl_item, pre_item = thing, None
 
+            if seq_rate is None:
+                seq_rate = thing.trimmed_range().duration.rate
+
             if result:
                 new_inputs.append(result)
 
-                edl_range = _calculate_edl(edl, edl_time, edl_item, pre_item)
-                edl_time = edl_range.end_time_exclusive()
+                edl_range = _calculate_edl(edl, edl_time, edl_item, seq_rate, pre_item)
+                edl_time = edl_range.end_time_exclusive().rescaled_to(seq_rate)
 
         commands.setNodeInputs(new_seq, new_inputs)
 
@@ -292,13 +288,21 @@ def _create_track(in_seq, context=None):
     return new_seq
 
 
-def _get_global_transform(tl) -> dict:
+def _get_global_transform(tl, context) -> dict:
     # since there's no global scale in otio, calculate the minimum box size
     # that can contain all clips
     def find_display_bounds(tl):
         display_bounds = None
         for clip in tl.find_clips():
             try:
+                # get active clip and start prelodaing the movie in the background
+                if isinstance(clip.media_reference, otio.schema.ExternalReference):
+                    media_path = _get_media_path(
+                        str(clip.media_reference.target_url), context
+                    )
+                    # print("PRELOADING MOVIE: {}".format(media_path))
+                    commands.startPreloadingMedia(media_path)
+
                 bounds = clip.media_reference.available_image_bounds
                 if bounds:
                     if display_bounds:
@@ -327,7 +331,7 @@ def _get_global_transform(tl) -> dict:
     }
 
 
-def _calculate_edl(edl, edl_time, item, pre_transition_item=None):
+def _calculate_edl(edl, edl_time, item, seq_rate, pre_transition_item=None):
     # EDL values don't make much sense for a transitions, since it has two
     # different sources as inputs. So if we have a transition, we'll just set
     # EDL values to consume the whole transition, and rely on the cut values
@@ -338,7 +342,7 @@ def _calculate_edl(edl, edl_time, item, pre_transition_item=None):
         duration = (item.in_offset + item.out_offset).rescaled_to(rate)
         out_frame = otio.opentime.to_frames(duration, rate)
     else:
-        in_frame, out_frame = _get_in_out_frame(item, item.trimmed_range())
+        in_frame, out_frame = _get_in_out_frame(item, item.trimmed_range(), seq_rate)
         duration = item.trimmed_range().duration
 
     edl["in"].append(in_frame)
@@ -352,7 +356,9 @@ def _set_sequence_edl(sequence, edl_time, edl):
     # edl.in/out are terminated by 0. edl.frame is terminated by last frame + 1.
     edl["in"].append(0)
     edl["out"].append(0)
-    edl["frame"].append(edl_time.to_frames() + 1)
+    # Note that the edl_time is already exclusive so we don't need to add 1 here
+    # For reference: _create_track() - edl_time = edl_range.end_time_exclusive()
+    edl["frame"].append(edl_time.to_frames())
 
     # This effectively forces each cut to use the otio trimmed_range, regardless
     # of effects or other modifications to a sources timing.
@@ -365,7 +371,7 @@ def _set_sequence_edl(sequence, edl_time, edl):
     commands.setIntProperty("{}.mode.autoEDL".format(sequence), [0])
 
 
-def _get_in_out_frame(it, range_to_read):
+def _get_in_out_frame(it, range_to_read, seq_rate=None):
     in_frame = out_frame = None
 
     if hasattr(it, "media_reference") and it.media_reference:
@@ -378,20 +384,21 @@ def _get_in_out_frame(it, range_to_read):
             )
 
     if not in_frame and not out_frame:
-        # because OTIO has no global concept of FPS, the rate of the duration
-        # is used as the rate for the range of the source.
+        rate = seq_rate if seq_rate is not None else range_to_read.duration.rate
         in_frame = otio.opentime.to_frames(
-            range_to_read.start_time, rate=range_to_read.duration.rate
+            range_to_read.start_time.rescaled_to(rate), rate=rate
         )
         out_frame = otio.opentime.to_frames(
-            range_to_read.end_time_inclusive(), rate=range_to_read.duration.rate
+            range_to_read.end_time_inclusive().rescaled_to(rate), rate=rate
         )
     return (in_frame, out_frame)
 
 
 def _create_timeline(tl, context=None):
     with set_context(
-        context, global_start_time=tl.global_start_time, **_get_global_transform(tl)
+        context,
+        global_start_time=tl.global_start_time,
+        **_get_global_transform(tl, context)
     ):
         stack = create_rv_node_from_otio(tl.tracks, context)
 
@@ -445,10 +452,26 @@ def _create_media(media_ref, trimmed_range, context=None):
                 context,
             )
         ]
+
+    elif isinstance(media_ref, otio.schema.GeneratorReference):
+        if media_ref.generator_kind == "solid":
+            color_parameters = media_ref.parameters.get("color")
+            kind = f"solid,{color_parameters}"
+            return [_create_movieproc(media_range, kind)]
+
     return [_create_movieproc(media_range, "smptebars")]
 
 
 def _create_sources(item, context=None):
+    def rename_media_rep(media_rep_name):
+        media_rep_name_replacement = {
+            "mp4": "Streaming",
+            "original_media": "Original",
+            "path_to_movie": "Movie",
+            "path_to_frames": "Frames",
+        }
+        return media_rep_name_replacement.get(media_rep_name, media_rep_name)
+
     def add_media(media_ref, active_key, cmd, *cmd_args):
         media = _create_media(media_ref, item.trimmed_range(), context)
 
@@ -488,7 +511,9 @@ def _create_sources(item, context=None):
     )
     if hasattr(item, "media_reference") and item.media_reference:
         active_source = add_media(
-            item.media_reference, active_key, commands.addSourceVerbose
+            item.media_reference,
+            rename_media_rep(active_key),
+            commands.addSourceVerbose,
         )
 
     source_group = commands.nodeGroup(active_source)
@@ -496,7 +521,11 @@ def _create_sources(item, context=None):
         for key, media_ref in item.media_references().items():
             if key != active_key:
                 add_media(
-                    media_ref, None, commands.addSourceMediaRep, active_source, key
+                    media_ref,
+                    None,
+                    commands.addSourceMediaRep,
+                    active_source,
+                    rename_media_rep(key),
                 )
 
         switch_group = commands.nodeConnections(source_group)[1][0]
@@ -511,7 +540,7 @@ def _create_sources(item, context=None):
 def _get_media_path(target_url: str, context: dict | None = None) -> str:
     context = context or {}
 
-    if "sg_url" in context:
+    if "sg_url" in context and target_url.startswith("/file_serve/version"):
         return context.get("sg_url") + target_url
 
     if not os.path.isabs(target_url):
