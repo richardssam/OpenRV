@@ -3798,6 +3798,9 @@ namespace TwkMovie
         }
 
         ojph::mem_infile infile;
+        ojph::set_error_stream(
+            nullptr); // Disable OpenJPH error messages, assume if there is an
+                      // error fall back on jpeg2000 decoder.
         infile.open(pkt->data, pkt->size);
 
         return decodeHTJ2K(&infile);
@@ -4004,7 +4007,17 @@ namespace TwkMovie
         {
             // If we are using OpenJPH to decode JPEG-2000 frames, we decode
             // the frame here and return the FrameBuffer.
-            return jpeg2000Decode(inframe, track);
+            try
+            {
+                return jpeg2000Decode(inframe, track);
+            }
+            catch (std::exception& e)
+            {
+                // If OpenJPH fails, we fall back on the regular JPEG2000
+                // decoder built into FFmpeg.
+                track->useOpenJPH = false;
+                return decodeImageAtFrame(inframe, track);
+            }
         }
 
 #if DB_TIMING & DB_LEVEL
